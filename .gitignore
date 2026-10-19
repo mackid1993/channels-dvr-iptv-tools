@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.prev.py
+*.new
+.DS_Store
+unmatched_stationids.csv
