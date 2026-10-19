@@ -127,6 +127,12 @@ Channels DVR server and is subject to its terms.
 
 Back up your Dispatcharr database before bulk changes.
 
+## Contributing
+
+This project does not accept issues or pull requests; both are turned off.
+
+You are welcome to fork, remix and build on it under the terms of the MIT license.
+
 ## License
 
 [MIT](LICENSE)
