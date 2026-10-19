@@ -5,7 +5,7 @@ A small desktop app that fills in the **Gracenote station ID** (`tvc-guide-stati
 your own [Channels DVR](https://getchannels.com) server already has access to.
 
 Once your channels carry the right station IDs, Channels DVR can use its Gracenote guide for
-them (two weeks of listings, artwork and logos) instead of your IPTV provider's EPG.
+them (two weeks of listings, artwork and logos) instead of your provider's EPG.
 
 It is a single Python file with no third-party dependencies and runs on Windows, macOS and Linux.
 
