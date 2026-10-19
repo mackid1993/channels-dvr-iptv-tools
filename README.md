@@ -31,7 +31,7 @@ Fuzzy matches are never written automatically. Anything uncertain needs your pic
 
 ## Features
 
-- **Multiple countries at once** (`USA:10001, CAN, GBR:SW1A`), for IPTV lists that mix them.
+- **Multiple countries at once** (`USA:10001, CAN, GBR:SW1A`), for lists that mix them.
   Lineups from all of them are merged into one index.
 - **Guided walkthrough** for unmatched channels: press 1-9 to pick, Esc to skip, Back, search
   your lineups or all of Gracenote, or type an ID.
