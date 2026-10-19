@@ -115,8 +115,19 @@ To have Channels DVR use the IDs, point it at Dispatcharr's M3U output. Dispatch
 
 ## Where data is stored
 
-Everything lives in `.channels_dvr_stationid_matcher` in your home folder
-(`%USERPROFILE%\.channels_dvr_stationid_matcher` on Windows):
+Everything lives in a `.channels_dvr_stationid_matcher` folder in your home directory:
+
+| System | Location |
+|---|---|
+| macOS, Linux and other Unix/POSIX systems | `~/.channels_dvr_stationid_matcher/` (e.g. `/Users/<you>/...` on macOS, `/home/<you>/...` on Linux) |
+| Windows | `%USERPROFILE%\.channels_dvr_stationid_matcher\` (e.g. `C:\Users\<you>\...`) |
+
+The folder name starts with a dot, so it is hidden by default on macOS and Linux. Open it with
+`open ~/.channels_dvr_stationid_matcher` (macOS) or `xdg-open ~/.channels_dvr_stationid_matcher`
+(Linux), or press Cmd-Shift-. in Finder to show hidden files. On Windows, paste the path above
+into Explorer's address bar. The **Open log** button in the app opens the log directly.
+
+It contains:
 
 | File | Contents |
 |---|---|
