@@ -7,7 +7,8 @@ your own [Channels DVR](https://getchannels.com) server already has access to.
 Once your channels carry the right station IDs, Channels DVR can use its Gracenote guide for
 them (two weeks of listings, artwork and logos) instead of your provider's EPG.
 
-It is a single Python file with no third-party dependencies and runs on Windows, macOS and Linux.
+It is a single Python file that runs on Windows, macOS and Linux. It needs Python with
+**Tk (tkinter)** installed; see [Requirements](#requirements).
 
 ## What it does
 
@@ -52,17 +53,35 @@ Fuzzy matches are never written automatically. Anything uncertain needs your pic
 
 ## Requirements
 
-- Python 3.8 or newer with Tk (tkinter).
+- **Python 3.8 or newer.**
+- **Tk (tkinter)** for the window. It is part of Python's standard library but is often a
+  separate install:
+
+  | Platform | Install Tk |
+  |---|---|
+  | Windows | The python.org installer includes it by default (keep "tcl/tk and IDLE" ticked). The Microsoft Store Python also includes it. |
+  | macOS, Homebrew Python | `brew install python-tk@3.13` (match your Python version) |
+  | macOS, Apple's `/usr/bin/python3` | Included |
+  | Debian / Ubuntu | `sudo apt install python3-tk` |
+  | Fedora | `sudo dnf install python3-tkinter` |
+  | Arch | `sudo pacman -S tk` |
+  | openSUSE | `sudo zypper install python3-tk` |
+
+  To check, run `python3 -c "import tkinter"`. It should print nothing.
 - A Channels DVR server you can reach on your network.
 - A Dispatcharr instance and an admin account or API key.
 
-The script checks for Tk when it starts. If it is missing it offers to install it (Homebrew,
-winget, apt, dnf, pacman or zypper) or switches to another Python on the machine that already
-has it. To only see what it would do:
+Nothing else is needed: no `pip install` and no other packages.
+
+When the script starts it checks for Tk. If it is missing it offers to install it with the
+commands above (Homebrew, winget, apt, dnf, pacman or zypper), or switches to another Python on
+the machine that already has it. To only see what it would do:
 
 ```
 python3 channels_dvr_stationid_matcher.py --check-deps
 ```
+
+Add `--yes` to install without being asked.
 
 ## Usage
 
