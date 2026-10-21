@@ -64,6 +64,19 @@ WRITE_BATCH = 50
 log = logging.getLogger("cdsm")
 
 
+def write_private_json(path, data):
+    """Write JSON readable only by the current user (it can hold an API key)."""
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    try:
+        os.chmod(tmp, 0o600)  # also tighten a pre-existing file
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
 def setup_logging():
     """Rotating log file in the config folder. Passwords and tokens are never logged."""
     if log.handlers:
@@ -1114,7 +1127,7 @@ def run_gui():
                     s = json.load(f)
             except (OSError, ValueError):
                 pass
-            for k in ("cdvr", "disp", "user", "countries"):
+            for k in ("cdvr", "disp", "user", "countries", "apikey"):
                 if s.get(k):
                     self.v[k].set(s[k])
             if not self.v["countries"].get():
@@ -1123,12 +1136,12 @@ def run_gui():
                 self.v["countries"].set(f"{code}:{s.get('postal') or COUNTRY_POSTAL.get(code, '10001')}")
 
         def _save_settings(self):
-            data = {k: self.v[k].get() for k in ("cdvr", "disp", "user", "countries")}
+            # The API key is saved too, so it doesn't have to be pasted every time. The file
+            # is readable only by your user account; delete it to forget the API key.
+            data = {k: self.v[k].get() for k in ("cdvr", "disp", "user", "countries", "apikey")}
             try:
                 os.makedirs(CONFIG_DIR, exist_ok=True)
-                with open(SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as f:
-                    json.dump(data, f)  # never stores the password or API key
-                os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)
+                write_private_json(SETTINGS_FILE, data)
             except OSError as e:
                 log.warning("Could not save settings: %s", e)
 

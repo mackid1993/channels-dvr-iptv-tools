@@ -1,0 +1,54 @@
+{
+  "id": "gracenote-station-ids",
+  "name": "Gracenote Station IDs",
+  "version": "1.0.0",
+  "api_version": "1.0.0",
+  "description": "Applies Gracenote station IDs (tvc-guide-stationid) picked in the Channels DVR Station ID Matcher to a playlist's channels.",
+  "entrypoint": "Plugin.php",
+  "class": "AppLocalPlugins\\GracenoteStationIds\\Plugin",
+  "capabilities": [
+    "channel_processor"
+  ],
+  "hooks": [],
+  "permissions": [
+    "db_read",
+    "db_write",
+    "queue_jobs"
+  ],
+  "schema": {
+    "tables": []
+  },
+  "data_ownership": {
+    "tables": [],
+    "directories": [],
+    "files": [],
+    "default_cleanup_policy": "preserve"
+  },
+  "settings": [],
+  "actions": [
+    {
+      "id": "apply_station_ids",
+      "label": "Apply Station IDs",
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": true
+        },
+        {
+          "id": "station_ids",
+          "label": "Station IDs from the matcher",
+          "type": "textarea",
+          "required": true,
+          "helper_text": "Paste what the matcher copied. One channel per line: channel_id=station_id. An empty station ID removes it."
+        }
+      ]
+    }
+  ]
+}
