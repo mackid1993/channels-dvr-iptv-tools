@@ -287,11 +287,13 @@ show up in Channels DVR as buffering, a black screen or a dropped channel.
 
 This profile replaces the stream fetcher with a small Python program that runs inside Dispatcharr:
 
-- **Starts with a cushion, and keeps it.** It joins 3 segments behind live (about 30 seconds on
-  10-second segments) and sends them to Dispatcharr at full speed. After that it holds a cushion
-  of up to about 15 seconds inside the profile and releases video at real-time speed, so a provider
-  that delivers at barely real-time speed, or a late segment, is covered from that reserve instead
-  of reaching the screen.
+- **Starts with a cushion and a hidden reserve, worked out from the stream.** It joins about 45
+  seconds behind live (counted in the stream's own segment length, never deeper than the
+  provider's playlist holds), hands about 30 seconds of that to Dispatcharr straight away, and
+  keeps the rest as a private reserve that it releases at real-time speed. When the provider
+  publishes a segment late, the reserve covers the wait, so the output never stops and the
+  client's cushion doesn't drain. When the provider catches up, the reserve refills at download
+  speed. There are no settings: segment length and timings come from each playlist.
 - **Refills the cushion after a stall.** It remembers the last segment it delivered. When the
   provider comes back, it resumes at the next segment and downloads everything it missed back to
   back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
@@ -308,15 +310,16 @@ This profile replaces the stream fetcher with a small Python program that runs i
 - **Tells a lagging server from a channel restart.** A server that is slightly behind is waited
   out instead of replayed; a real channel restart is rejoined without the timeline jumping back.
 - **Survives Dispatcharr's own restarts.** If Dispatcharr's health check restarts the stream, the
-  new copy picks up at the exact point the old one stopped sending (it remembers the position per
-  channel, so this works even when Dispatcharr reconnects on a different provider login).
+  new copy picks up at the exact point the old one stopped sending, with its reserve intact (it
+  remembers the position per channel, so this works even when Dispatcharr reconnects on a
+  different provider login).
 - **Backs off politely.** Connection-limit responses (503, 509, 429) wait longer and respect
   `Retry-After` (up to 30 seconds).
 - **One continuous stream, no re-encoding.** A single `ffmpeg -c copy` remuxer delivers MPEG-TS to
   Dispatcharr, so quality and CPU use are unchanged. AES-128 encrypted streams, fMP4 segments and
   byte-range playlists are supported too.
 
-You watch about 30 seconds behind live, like most IPTV player apps.
+You watch about 45 seconds behind live on providers with 10-second segments (less on providers whose playlists are short).
 
 ### Requirements
 
@@ -389,9 +392,9 @@ with `[hlsloop]`:
 | `playlist error (...); retry N in Ns` | A request failed and is being retried. |
 | `skipped segment N` | A segment could not be downloaded in time and was skipped so playback could continue. |
 
-Dispatcharr also logs `Stream unhealthy - no data for 10s` followed by `Stream health restored`
-every half minute or so. That is normal for HLS: segments arrive in bursts about 10 seconds apart,
-and Dispatcharr's health check expects a steady flow. It is not an error.
+Because the profile releases video at a steady real-time pace, Dispatcharr's
+`Stream unhealthy - no data for 10s` warning should no longer appear for streams using it. If it
+does, the provider went quiet for longer than the profile's reserve.
 
 ### What it can't fix
 
@@ -401,6 +404,9 @@ and Dispatcharr's health check expects a steady flow. It is not an error.
   but the program continues from wherever the backup feed is.
 - **Feeds with a different resolution or codec** can cause a brief glitch on the client at a
   failover while its decoder resets.
+- **A late publish longer than about 25 seconds** on a 10-second-segment provider uses up the
+  reserve and then the client's cushion. Providers with short playlists or short segments get a
+  smaller reserve.
 - **A provider outage longer than the playlist window** (usually about a minute) on a channel with
   no backup. The picture freezes; when the provider comes back, the profile recovers on its own,
   but video from the outage is lost.
@@ -493,15 +499,15 @@ def fetch(q):
  c=Cipher(algorithms.AES(keys[k[1]]),modes.CBC(iv)).decryptor();d=c.update(d)+c.finalize()
  return d[:-d[-1]] if d and 0<d[-1]<=16 else d
 st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()).hexdigest()+".json"
-last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;sl=threading.Lock()
+last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<10:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<10:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
-  with sl,open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"t":time.time()},f)
+  with sl,open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"t":time.time()},f)
   os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -541,13 +547,16 @@ if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
 media=None;err=0;e0=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
+def join(segs):
+ global dep
+ n=max(1,min(max(3,int(-(-45//max(tgt,1)))),len(segs)-1));dep=n*tgt;return segs[-n:]
 def enq(it):
  with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
 def writer():
- global wlast,wpart,oend,off
- bud=0.0;t=mono();cd=0.0;nw=0
+ global wlast,wpart,oend,off,wlead
+ lead=wlead;t=mono()
  while run:
-  now=mono();bud=min(bud+now-t,max(1.0,cd));t=now
+  now=mono();lead=max(lead-(now-t),0.0);t=now;wlead=lead
   if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
   with ql:
    it=Q[0] if Q else None;qs=Qs[0]
@@ -560,15 +569,14 @@ def writer():
     remux(it[1])
    else:put(it[1])
    continue
-  d=it[1];k=min(65424,len(d)-it[5]);cd=it[2]*k/max(len(d),1)
-  slow=nw>=3 and qs<=max(1.5*tgt,8)
-  if slow and bud<cd:time.sleep(0.02);continue
-  if slow:bud-=cd
-  put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]]
+  dp=dep or 3*tgt;cl=min(30,dp*2/3)
+  if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
+  d=it[1];k=min(65424,max(len(d)//40,188),len(d)-it[5]);cd=it[2]*k/max(len(d),1)
+  put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd
   with ql:Qs[0]-=cd
   if it[5]>=len(d):
    with ql:Q.popleft()
-   wlast=it[3];wpart=None;nw+=1
+   wlast=it[3];wpart=None
    if it[4] is not None:oend=it[4]+off+it[2]
   save()
 remux()
@@ -606,9 +614,9 @@ while not gone():
    if len(ids)>300:ids={k:v for k,v in ids.items() if v>nid-100}
    if rseen:last=max([q["n"] for q in segs if q["p"] in rseen],default=None)
   rseen=None;err=0;e0=None;dead=0;w=min(max(tgt/2,1),5)
-  if last is None:new=segs[-3:];lag=None
+  if last is None:new=join(segs);lag=None
   elif segs[-1]["n"]<last:
-   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=segs[-3:];lag=None;pend=True
+   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=join(segs);lag=None;pend=True
    else:
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
@@ -618,6 +626,7 @@ while not gone():
   if new:fresh=got=mono()
   elif mono()-got>lim:handoff("no new video for %ds"%(mono()-got))
   elif mono()-fresh>2*tgt:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
+  if not new and mono()-fresh>0.8*tgt:w=min(w,max(tgt/10,0.5))
   if last is not None and len(new)>1:log("catching up %d segments"%len(new))
   for q in new:
    n=q["n"];d=None
