@@ -287,8 +287,11 @@ show up in Channels DVR as buffering, a black screen or a dropped channel.
 
 This profile replaces the stream fetcher with a small Python program that runs inside Dispatcharr:
 
-- **Starts with a cushion.** It joins 3 segments behind live (about 30 seconds on 10-second
-  segments) and downloads them at full speed, so short hiccups never reach the screen.
+- **Starts with a cushion, and keeps it.** It joins 3 segments behind live (about 30 seconds on
+  10-second segments) and sends them to Dispatcharr at full speed. After that it holds a cushion
+  of up to about 15 seconds inside the profile and releases video at real-time speed, so a provider
+  that delivers at barely real-time speed, or a late segment, is covered from that reserve instead
+  of reaching the screen.
 - **Refills the cushion after a stall.** It remembers the last segment it delivered. When the
   provider comes back, it resumes at the next segment and downloads everything it missed back to
   back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
@@ -304,8 +307,9 @@ This profile replaces the stream fetcher with a small Python program that runs i
   (and never plays the black placeholder) until the provider comes back.
 - **Tells a lagging server from a channel restart.** A server that is slightly behind is waited
   out instead of replayed; a real channel restart is rejoined without the timeline jumping back.
-- **Survives Dispatcharr's own restarts.** If Dispatcharr restarts the stream, the new copy picks
-  up where the old one stopped instead of starting over.
+- **Survives Dispatcharr's own restarts.** If Dispatcharr's health check restarts the stream, the
+  new copy picks up at the exact point the old one stopped sending (it remembers the position per
+  channel, so this works even when Dispatcharr reconnects on a different provider login).
 - **Backs off politely.** Connection-limit responses (503, 509, 429) wait longer and respect
   `Retry-After` (up to 30 seconds).
 - **One continuous stream, no re-encoding.** A single `ffmpeg -c copy` remuxer delivers MPEG-TS to
@@ -424,12 +428,12 @@ mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1
 def log(m):print("[hlsloop]",m,file=sys.stderr,flush=True)
 ff=None;sig=None;cmap=None;off=0.0
 def remux(why=None):
- global ff,sig,cmap
+ global ff
  if why:log("restarting remuxer: "+why)
  if ff and ff.poll() is None:
   try:ff.stdin.close();ff.wait(5)
   except Exception:ff.kill()
- ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE);sig=None;cmap=None
+ ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE)
 def gone():
  try:
   pl=select.poll();pl.register(1,select.POLLOUT)
@@ -437,9 +441,9 @@ def gone():
  except Exception:return False
 def put(b):
  try:ff.stdin.write(b);ff.stdin.flush()
- except BrokenPipeError:
+ except Exception as e:
   if gone():bye()
-  remux("remuxer died");time.sleep(1);ff.stdin.write(b);ff.stdin.flush()
+  remux("remuxer rejected data (%s)"%e)
 def attrs(x):return {k:v.strip(chr(34)) for k,v in re.findall(r"([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)",x.split(":",1)[1])}
 def tsig(d):
  try:
@@ -488,16 +492,16 @@ def fetch(q):
  iv=int(k[2],16).to_bytes(16,"big") if k[2] else q["s"].to_bytes(16,"big")
  c=Cipher(algorithms.AES(keys[k[1]]),modes.CBC(iv)).decryptor();d=c.update(d)+c.finalize()
  return d[:-d[-1]] if d and 0<d[-1]<=16 else d
-st="/tmp/hlsloop-"+hashlib.md5(src.encode()).hexdigest()+".json"
-last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None
+st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()).hexdigest()+".json"
+last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<10:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<10:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
-  with open(st+".tmp","w") as f:json.dump({"last":last,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"t":time.time()},f)
+  with sl,open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"t":time.time()},f)
   os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -531,17 +535,45 @@ def handoff(why):
  cur=nxt;media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
 def bye():
  global run
- run=0;bt.join(2)
- try:os.remove(st)
- except Exception:pass
- os._exit(0)
+ run=0;save();os._exit(0)
 for g in (15,2,1):signal.signal(g,lambda*a:(ff and ff.kill(),os._exit(0)))
 if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
 media=None;err=0;e0=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
+Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
+def enq(it):
+ with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
+def writer():
+ global wlast,wpart,oend,off
+ bud=0.0;t=mono();cd=0.0;nw=0
+ while run:
+  now=mono();bud=min(bud+now-t,max(1.0,cd));t=now
+  if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
+  with ql:
+   it=Q[0] if Q else None;qs=Qs[0]
+   if it is None:Qs[0]=0.0
+  if it is None:time.sleep(0.05);continue
+  if it[0]!="seg":
+   with ql:Q.popleft()
+   if it[0]=="remux":
+    if it[3] is not None:off=it[3]
+    remux(it[1])
+   else:put(it[1])
+   continue
+  d=it[1];k=min(65424,len(d)-it[5]);cd=it[2]*k/max(len(d),1)
+  slow=nw>=3 and qs<=max(1.5*tgt,8)
+  if slow and bud<cd:time.sleep(0.02);continue
+  if slow:bud-=cd
+  put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]]
+  with ql:Qs[0]-=cd
+  if it[5]>=len(d):
+   with ql:Q.popleft()
+   wlast=it[3];wpart=None;nw+=1
+   if it[4] is not None:oend=it[4]+off+it[2]
+  save()
 remux()
+threading.Thread(target=writer,daemon=True).start()
 while not gone():
- if ff.poll() is not None:dead+=1;remux("remuxer exited");time.sleep(min(dead,5));continue
  try:
   r=s.get(media or cur,timeout=(5,10));r.raise_for_status()
   L=[x.strip() for x in r.text.splitlines() if x.strip()]
@@ -598,22 +630,20 @@ while not gone():
     if n in bad and sum(o["n"]>n for o in new)>=2:log("skipped segment %d"%n);last=n;continue
     bad.add(n);media=None;w=1;break
    if q["m"]!=cmap:
-    if cmap is not None:remux("new init segment")
-    i=s.get(q["m"],timeout=(3,5));i.raise_for_status();put(i.content);cmap=q["m"]
+    if cmap is not None:enq(["remux","new init segment",0,None]);sig=None
+    i=s.get(q["m"],timeout=(3,5));i.raise_for_status();enq(["init",i.content,0]);cmap=q["m"]
    p0=pts0(d)
    if pend:
     pend=False
-    if p0 is not None and oend is not None:off=oend-p0;remux("joining the backup stream seamlessly (offset %.1fs)"%off)
+    if p0 is not None and qend is not None:moff=qend-p0;enq(["remux","joining the backup stream seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
    g=tsig(d)
-   if g and sig and g!=sig:remux("stream layout changed")
+   if g and sig and g!=sig:enq(["remux","stream layout changed",0,None]);cmap=None
    if g:sig=g
-   try:put(d)
-   except Exception as e:
-    if gone():bye()
-    log("remuxer rejected segment %d (%s), skipping"%(n,e));remux("rejected segment");last=n;continue
+   o=0
+   if rpart and rpart[0]==n and rpart[1]<len(d):o=rpart[1]-rpart[1]%188;rpart=None
+   enq(["seg",d,q["d"] or tgt,n,p0,o])
    last=n;bad.discard(n);seen.append(q["p"])
-   if p0 is not None:oend=p0+off+(q["d"] or tgt)
-   save()
+   if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   time.sleep(w)
  except Exception as e:
   if e0 is None:e0=mono()
