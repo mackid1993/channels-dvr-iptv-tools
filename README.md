@@ -756,6 +756,59 @@ In Dispatcharr, open **Channels**, edit the channel, search for the other feed i
 list and add it, then drag it below the current stream and save. The app does the same thing for
 many channels at once.
 
+## Removing provider prefixes from channel names
+
+Many IPTV providers put a country or category prefix in front of every channel name, for example
+`US| CNN HD`, `U.S| MSNBC HD` or `TV| MS NOW`. Dispatcharr can strip it with a regex find/replace,
+so Channels DVR shows `CNN HD` and you can sort channels alphabetically.
+
+**Find (Regex):**
+
+```
+^[^|]*\|\s*
+```
+
+**Replace:** leave it empty.
+
+It removes everything from the start of the name up to and including the first `|`, plus any
+spaces after it. Names without a `|` are left alone.
+
+| Before | After |
+|---|---|
+| `US| CNN HD` | `CNN HD` |
+| `U.S| MSNBC HD` | `MSNBC HD` |
+| `TV| MS NOW` | `MS NOW` |
+| `CNN HD` | `CNN HD` |
+
+Where you set it depends on how your channels were created.
+
+### Channels created by Auto Channel Sync
+
+Set it on the group, so it is applied on every sync. If you only rename these channels by hand,
+the next sync renames them back to the provider's name.
+
+1. Open **M3U & EPG Manager** and edit your provider's M3U account.
+2. Open **Groups & Auto Sync Settings**.
+3. On each group that has **Auto Channel Sync** turned on, press the gear icon
+   (**Configure advanced options for this group**).
+4. Under **Name Transforms**, put the pattern in **Find (Regex)** and leave **Replace** empty.
+   The preview shows how real stream names in that group will change.
+5. Save, then refresh the M3U account so the sync runs and renames the channels.
+
+Repeat for every auto-synced group.
+
+### Channels you created yourself
+
+1. Open **Channels**.
+2. Tick the channels to rename (the checkbox in the header selects all channels shown).
+3. Press **Edit** above the table to open the bulk edit for the selected channels.
+4. Under **Channel Name**, put the pattern in **Find (Regex)** and leave **Replace** empty.
+5. Save. Dispatcharr renames every selected channel.
+
+Renaming only changes the name shown in Channels DVR. Gracenote station IDs, channel numbers,
+streams and backup streams are not affected, and the station ID matcher and backup streams apps
+ignore these prefixes when matching, so you can rename before or after using them.
+
 ## Disclaimer
 
 This is an unofficial community project. It is not affiliated with, endorsed by or supported by
