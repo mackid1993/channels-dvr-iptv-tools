@@ -25,10 +25,6 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 The two apps match channels the same way. They differ only in where the channels come from and
 how the IDs are saved. Use the app for whichever manager you run.
 
-> **Renamed:** the Dispatcharr app used to be called `channels_dvr_stationid_matcher.py`. It is now
-> `dispatcharr_stationid_matcher.py`. Its settings folder moves to the new name automatically the
-> first time you run it.
-
 ## How it fits together
 
 ```
