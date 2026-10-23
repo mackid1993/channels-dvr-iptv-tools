@@ -287,9 +287,8 @@ show up in Channels DVR as buffering, a black screen or a dropped channel.
 
 This profile replaces the stream fetcher with a small Python program that runs inside Dispatcharr:
 
-- **Starts with a cushion.** It joins 6 segments behind live (about 60 seconds on 10-second
-  segments) and downloads them at full speed, so short hiccups and a provider that delivers
-  slightly slower than real time don't reach the screen.
+- **Starts with a cushion.** It joins 3 segments behind live (about 30 seconds on 10-second
+  segments) and downloads them at full speed, so short hiccups never reach the screen.
 - **Refills the cushion after a stall.** It remembers the last segment it delivered. When the
   provider comes back, it resumes at the next segment and downloads everything it missed back to
   back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
@@ -312,7 +311,7 @@ This profile replaces the stream fetcher with a small Python program that runs i
   Dispatcharr, so quality and CPU use are unchanged. AES-128 encrypted streams, fMP4 segments and
   byte-range playlists are supported too.
 
-You watch about a minute behind live.
+You watch about 30 seconds behind live, like most IPTV player apps.
 
 ### Requirements
 
@@ -574,9 +573,9 @@ while not gone():
    if len(ids)>300:ids={k:v for k,v in ids.items() if v>nid-100}
    if rseen:last=max([q["n"] for q in segs if q["p"] in rseen],default=None)
   rseen=None;err=0;dead=0;w=min(max(tgt/2,1),5)
-  if last is None:new=segs[-6:];lag=None
+  if last is None:new=segs[-3:];lag=None
   elif segs[-1]["n"]<last:
-   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=segs[-6:];lag=None;pend=True
+   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=segs[-3:];lag=None;pend=True
    else:
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
