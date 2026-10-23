@@ -1638,7 +1638,7 @@ def run_gui():
             sub = ttk.Label(win, foreground="gray")
             sub.pack(anchor="w", padx=10)
             ttk.Label(win, text="Pick the right station (double-click, Enter, or press 1-9). "
-                                "Esc = skip.").pack(anchor="w", padx=10, pady=(8, 2))
+                                "Esc = skip, / = new search.").pack(anchor="w", padx=10, pady=(8, 2))
             lb = tk.Listbox(win, height=14, exportselection=False, font=("TkFixedFont", 12))
             lb.pack(fill="both", expand=True, padx=10)
 
@@ -1780,6 +1780,8 @@ def run_gui():
             ttk.Button(brow, text="Back", command=back).pack(side="right", padx=4)
             ttk.Button(brow, text="Use selected", command=pick).pack(side="right", padx=4)
             se.bind("<Return>", do_search)
+            se.bind("<FocusIn>", lambda e: se.after_idle(lambda: se.select_range(0, "end")))
+            win.bind("/", lambda e: (se.focus_set(), "break")[1])
             lb.bind("<Double-1>", pick)
             lb.bind("<Return>", pick)
             win.bind("<Escape>", lambda e: advance())
