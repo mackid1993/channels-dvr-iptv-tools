@@ -1068,6 +1068,9 @@ def run_gui():
             se = ttk.Entry(pick, textvariable=self.search_v, width=28)
             se.grid(row=2, column=1, padx=4)
             se.bind("<Return>", lambda e: self.search())
+            self.main_live, _ = self._live(self.search_v, lambda c, t, w: self._show_cands(c, outside=True))
+            se.bind("<Down>", lambda e: (self.cand.focus_set(), self.cand.selection_clear(0, "end"),
+                                         self.cand.selection_set(0), self.cand.activate(0), "break")[-1])
             ttk.Button(pick, text="Search", command=self.search).grid(row=2, column=2, padx=4)
             self.manual_v = tk.StringVar()
             ttk.Entry(pick, textvariable=self.manual_v, width=28).grid(row=3, column=1, padx=4)
@@ -1491,6 +1494,63 @@ def run_gui():
             sel = self.tree.selection()
             return (int(sel[0]), self.rows[int(sel[0])]) if sel else (None, None)
 
+        def _live(self, var, render, wide=lambda: False, alive=lambda: True):
+            """Re-run a station search as the user types.
+
+            Local lineup results appear right away; Gracenote-wide results follow in the
+            background when the local ones are weak (or when wide() is ticked). Results from
+            an older keystroke are dropped.
+            """
+            st = {"gen": 0, "after": None, "mute": False, "typed": False}
+
+            def run():
+                st["after"] = None
+                st["gen"] += 1
+                gen = st["gen"]
+                text = var.get().strip()
+                if not text or not self.matcher or not alive():
+                    return
+                local = merge_candidates(self.matcher, text, self.matcher.search(text),
+                                         self.matcher.suggest(text))
+                render(local, text, False)
+                best = name_score(text, local[0]["name"], _bare_call(local[0])) if local else 0.0
+                if self.cdvr and len(text) >= 2 and (wide() or best < GOOD_LOCAL):
+                    cdvr = self.cdvr
+
+                    def bg():
+                        try:
+                            extra = global_candidates(cdvr, text, self.matcher, limit=25)
+                        except Exception as e:  # only the extra suggestions are lost
+                            log.debug("Live Gracenote search %r failed: %s", text, e)
+                            return
+                        merged = merge_candidates(self.matcher, text, local, extra, limit=30)
+                        self.root.after(0, lambda: gen == st["gen"] and alive() and render(merged, text, True))
+                    threading.Thread(target=bg, name="live-search", daemon=True).start()
+
+            def changed(*_):
+                if st["mute"]:
+                    return
+                st["typed"] = True
+                if st["after"]:
+                    self.root.after_cancel(st["after"])
+                st["after"] = self.root.after(250, run)
+
+            var.trace_add("write", changed)
+            return st, run
+
+        def _set_quiet(self, st, var, value):
+            """Set a live-search box without triggering a search."""
+            if st["after"]:
+                self.root.after_cancel(st["after"])
+                st["after"] = None
+            st["gen"] += 1
+            st["typed"] = False
+            st["mute"] = True
+            try:
+                var.set(value)
+            finally:
+                st["mute"] = False
+
         def _selected(self, _e=None):
             _, r = self._row()
             if not r:
@@ -1500,7 +1560,8 @@ def run_gui():
                                        f"(current ID: {r['current'] or '-'}, tvg-id: "
                                        f"{ch.get('effective_tvg_id') or '-'})   {r['why']}")
             self._show_cands(r["cands"])
-            self.search_v.set(re.sub(r"\s+", " ", " ".join(sorted(tokens(ch.get("effective_name") or "")))))
+            self._set_quiet(self.main_live, self.search_v,
+                            re.sub(r"\s+", " ", " ".join(sorted(tokens(ch.get("effective_name") or "")))))
 
         def _show_cands(self, cands, outside=False):
             self.cand_list = cands
@@ -1638,7 +1699,7 @@ def run_gui():
             sub = ttk.Label(win, foreground="gray")
             sub.pack(anchor="w", padx=10)
             ttk.Label(win, text="Pick the right station (double-click, Enter, or press 1-9). "
-                                "Esc = skip, / = new search.").pack(anchor="w", padx=10, pady=(8, 2))
+                                "Esc = skip. Type in Search for other stations.").pack(anchor="w", padx=10, pady=(8, 2))
             lb = tk.Listbox(win, height=14, exportselection=False, font=("TkFixedFont", 12))
             lb.pack(fill="both", expand=True, padx=10)
 
@@ -1660,7 +1721,7 @@ def run_gui():
             prog = ttk.Label(brow)
             prog.pack(side="left")
 
-            def fill(cands, note=""):
+            def fill(cands, note="", focus=True):
                 state["cands"] = cands
                 lb.delete(0, "end")
                 for n, s in enumerate(cands, 1):
@@ -1672,7 +1733,8 @@ def run_gui():
                     lb.insert("end", note or "No options. Try a search, or type a station ID.")
                 else:
                     lb.selection_set(0)
-                lb.focus_set()
+                if focus:
+                    lb.focus_set()
 
             def show():
                 if state["pos"] >= len(todo):
@@ -1690,7 +1752,7 @@ def run_gui():
                                 f"current ID: {r['current'] or '-'}    {r['why']}")
                 prog.config(text=f"Channel {state['pos'] + 1} of {len(todo)}")
                 cands = merge_candidates(self.matcher, name, r["cands"], self.matcher.suggest(name))
-                sv.set(search_phrase(name))
+                self._set_quiet(live, sv, search_phrase(name))
                 iv.set("")
                 fill(cands, "Looking wider in Gracenote…")
                 best = name_score(name, cands[0]["name"], _bare_call(cands[0])) if cands else 0
@@ -1706,8 +1768,8 @@ def run_gui():
                                 text=prog.cget("text") + "   (Gracenote search failed - press Search to retry)"))
                             return
                         if extra:
-                            win.after(0, lambda: state["pos"] == pos and win.winfo_exists() and fill(
-                                merge_candidates(self.matcher, name, cands, extra)))
+                            win.after(0, lambda: state["pos"] == pos and win.winfo_exists() and not live["typed"] and fill(
+                                merge_candidates(self.matcher, name, cands, extra), focus=False))
                     threading.Thread(target=bg, name="suggest", daemon=True).start()
 
             def advance():
@@ -1780,7 +1842,13 @@ def run_gui():
             ttk.Button(brow, text="Back", command=back).pack(side="right", padx=4)
             ttk.Button(brow, text="Use selected", command=pick).pack(side="right", padx=4)
             se.bind("<Return>", do_search)
+            live, run_live = self._live(
+                sv, lambda c, t, w: fill(c, "No matches yet. Keep typing, or tick 'search all of Gracenote'.",
+                                         focus=False),
+                wide=outside.get, alive=win.winfo_exists)
+            outside.trace_add("write", lambda *a: run_live())
             se.bind("<FocusIn>", lambda e: se.after_idle(lambda: se.select_range(0, "end")))
+            se.bind("<Down>", lambda e: (lb.focus_set(), "break")[1])
             win.bind("/", lambda e: (se.focus_set(), "break")[1])
             lb.bind("<Double-1>", pick)
             lb.bind("<Return>", pick)
