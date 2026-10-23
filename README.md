@@ -298,13 +298,15 @@ This profile replaces the stream fetcher with a small Python program that runs i
   provider comes back, it resumes at the next segment and downloads everything it missed back to
   back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
   the provider's playlist (usually about a minute).
-- **Fails over to the channel's backup streams on its own.** It switches to the next stream on the
-  channel at once if the feed turns into the provider's offline placeholder, after about 5 seconds
-  if the feed can't be reached, and after about 20 seconds (2 segment lengths) if the feed is
-  reachable but stops producing new video. All of these are inside the 30-second cushion.
-  The connection to Dispatcharr and Channels DVR stays open, and the timestamps of the new feed are
-  shifted so they continue exactly where the old feed stopped: no stall, no rebuffer, no restart
-  of the stream. Add backup streams with [`dispatcharr_backup_streams.py`](#backup-streams-app).
+- **Fails over to the channel's backup streams on its own, without rewinding.** It switches to
+  the next stream on the channel at once if the feed turns into the provider's offline
+  placeholder, and when the feed has produced no new video for about as long as its hidden reserve
+  can cover (about 20 seconds on 10-second segments; brief errors are ridden out on the same feed,
+  and a stuck playlist is re-checked first). The backup is joined only as far back as the outage
+  lasted, so the program continues instead of replaying; if the first backup is dead too, the
+  outage keeps counting until a working stream is reached. The connection to Dispatcharr and
+  Channels DVR stays open and timestamps continue where the old feed stopped. Add backup streams
+  with [`dispatcharr_backup_streams.py`](#backup-streams-app).
 - **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
   (and never plays the black placeholder) until the provider comes back.
 - **Tells a lagging server from a channel restart.** A server that is slightly behind is waited
@@ -398,7 +400,7 @@ does, the provider went quiet for longer than the profile's reserve.
 
 ### What it can't fix
 
-- **The program can skip or repeat a few seconds when it fails over.** Two feeds of the same
+- **The program can skip or repeat up to one segment when it fails over.** Two feeds of the same
   channel are separate encodes that run at different delays behind live, and providers don't send
   the wall-clock time needed to line them up. The switch itself is smooth (no stall or rebuffer),
   but the program continues from wherever the backup feed is.
@@ -439,7 +441,7 @@ def remux(why=None):
  if ff and ff.poll() is None:
   try:ff.stdin.close();ff.wait(5)
   except Exception:ff.kill()
- ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE)
+ ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE)
 def gone():
  try:
   pl=select.poll();pl.register(1,select.POLLOUT)
@@ -502,7 +504,7 @@ st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<10:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
@@ -531,54 +533,59 @@ def feeds():
  return out
 cur=src;pend=False
 def handoff(why):
- global stalled,got,cur,media,last,lag,pend,rseen,bad
+ global stalled,got,cur,media,last,lag,pend,rseen,bad,gap
  fl=feeds()
  if len(fl)<2:
   if not stalled:log(why+"; no backup stream on this channel, so staying on this feed")
   stalled=True;got=mono();return
  nxt=fl[(fl.index(cur)+1)%len(fl)] if cur in fl else fl[1]
  log(why+"; switching to stream %d of %d"%(fl.index(nxt)+1,len(fl)))
- cur=nxt;media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
+ cur=nxt;gap=(gap or 0)+mono()-got;media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
 def bye():
  global run
  run=0;save();os._exit(0)
 for g in (15,2,1):signal.signal(g,lambda*a:(ff and ff.kill(),os._exit(0)))
 if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
-media=None;err=0;e0=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
+media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
 def join(segs):
  global dep
  n=max(1,min(max(3,int(-(-45//max(tgt,1)))),len(segs)-1));dep=n*tgt;return segs[-n:]
+def cushlim():
+ dp=dep or 3*tgt
+ return max(min(3*tgt,dp-min(30,dp*2/3)),2*tgt)
 def enq(it):
  with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
 def writer():
  global wlast,wpart,oend,off,wlead
  lead=wlead;t=mono()
  while run:
-  now=mono();lead=max(lead-(now-t),0.0);t=now;wlead=lead
-  if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
-  with ql:
-   it=Q[0] if Q else None;qs=Qs[0]
-   if it is None:Qs[0]=0.0
-  if it is None:time.sleep(0.05);continue
-  if it[0]!="seg":
-   with ql:Q.popleft()
-   if it[0]=="remux":
-    if it[3] is not None:off=it[3]
-    remux(it[1])
-   else:put(it[1])
-   continue
-  dp=dep or 3*tgt;cl=min(30,dp*2/3)
-  if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
-  d=it[1];k=min(65424,max(len(d)//40,188),len(d)-it[5]);cd=it[2]*k/max(len(d),1)
-  put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd
-  with ql:Qs[0]-=cd
-  if it[5]>=len(d):
-   with ql:Q.popleft()
-   wlast=it[3];wpart=None
-   if it[4] is not None:oend=it[4]+off+it[2]
-  save()
+  try:
+   now=mono();lead=max(lead-(now-t),0.0);t=now;wlead=lead
+   if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
+   with ql:
+    it=Q[0] if Q else None;qs=Qs[0]
+    if it is None:Qs[0]=0.0
+   if it is None:time.sleep(0.05);continue
+   if it[0]!="seg":
+    with ql:Q.popleft()
+    if it[0]=="remux":
+     if it[3] is not None:off=it[3]
+     remux(it[1])
+    else:put(it[1])
+    continue
+   dp=dep or 3*tgt;cl=min(30,dp*2/3)
+   if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
+   d=it[1];k=min(65424,max(len(d)//40,188),len(d)-it[5]);cd=it[2]*k/max(len(d),1)
+   put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd
+   with ql:Qs[0]-=cd
+   if it[5]>=len(d):
+    with ql:Q.popleft()
+    wlast=it[3];wpart=None
+    if it[4] is not None:oend=it[4]+off+it[2]
+   save()
+  except Exception as e:log("writer error (%s)"%e);time.sleep(1)
 remux()
 threading.Thread(target=writer,daemon=True).start()
 while not gone():
@@ -614,18 +621,18 @@ while not gone():
    if len(ids)>300:ids={k:v for k,v in ids.items() if v>nid-100}
    if rseen:last=max([q["n"] for q in segs if q["p"] in rseen],default=None)
   rseen=None;err=0;e0=None;dead=0;w=min(max(tgt/2,1),5)
-  if last is None:new=join(segs);lag=None
+  if last is None:new=join(segs) if gap is None else segs[-max(1,min(len(segs),int(-(-gap//max(tgt,1))))):];gap=None;lag=None
   elif segs[-1]["n"]<last:
    if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=join(segs);lag=None;pend=True
    else:
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
   else:new=[q for q in segs if q["n"]>last];lag=None
-  lim=max(2*tgt,10)
+  lim=cushlim()
   if new:stalled=False
   if new:fresh=got=mono()
   elif mono()-got>lim:handoff("no new video for %ds"%(mono()-got))
-  elif mono()-fresh>2*tgt:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
+  elif mono()-fresh>0.6*lim:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
   if not new and mono()-fresh>0.8*tgt:w=min(w,max(tgt/10,0.5))
   if last is not None and len(new)>1:log("catching up %d segments"%len(new))
   for q in new:
@@ -656,12 +663,12 @@ while not gone():
   time.sleep(w)
  except Exception as e:
   if e0 is None:e0=mono()
-  if mono()-got>max(2*tgt,10) or (not stalled and mono()-e0>5):
+  if mono()-got>cushlim():
    handoff("feed unreachable for %ds"%(mono()-e0))
    if not stalled:err=0;e0=None;continue
   err+=1;media=None;rs=getattr(e,"response",None);c=getattr(rs,"status_code",0);ra=rs.headers.get("Retry-After","") if rs is not None else ""
   dl=min(int(ra),30) if ra.isdigit() else (min(2*err,10) if c in BUSY else min(err,5))
-  if not stalled:dl=max(0.5,min(dl,max(2*tgt,10)-(mono()-got),5.5-(mono()-e0)))
+  if not stalled:dl=max(0.5,min(dl,cushlim()-(mono()-got)))
   log("playlist error (%s); retry %d in %ds"%(e,err,dl));time.sleep(dl)
 bye()' {streamUrl} {userAgent} {channelId}
 ```
