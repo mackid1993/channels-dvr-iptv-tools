@@ -293,9 +293,10 @@ This profile replaces the stream fetcher with a small Python program that runs i
   provider comes back, it resumes at the next segment and downloads everything it missed back to
   back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
   the provider's playlist (usually about a minute).
-- **Fails over to the channel's backup streams on its own.** If the feed stops producing video for
-  about 25 seconds (2.5 segment lengths), can't be reached for that long, or turns into the
-  provider's offline placeholder, the profile switches to the next stream on the channel itself.
+- **Fails over to the channel's backup streams on its own.** It switches to the next stream on the
+  channel at once if the feed turns into the provider's offline placeholder, after about 5 seconds
+  if the feed can't be reached, and after about 20 seconds (2 segment lengths) if the feed is
+  reachable but stops producing new video. All of these are inside the 30-second cushion.
   The connection to Dispatcharr and Channels DVR stays open, and the timestamps of the new feed are
   shifted so they continue exactly where the old feed stopped: no stall, no rebuffer, no restart
   of the stream. Add backup streams with [`dispatcharr_backup_streams.py`](#backup-streams-app).
@@ -537,7 +538,7 @@ def bye():
 for g in (15,2,1):signal.signal(g,lambda*a:(ff and ff.kill(),os._exit(0)))
 if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
-media=None;err=0;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
+media=None;err=0;e0=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
 remux()
 while not gone():
  if ff.poll() is not None:dead+=1;remux("remuxer exited");time.sleep(min(dead,5));continue
@@ -572,7 +573,7 @@ while not gone():
     q["n"]=ids[q["p"]]
    if len(ids)>300:ids={k:v for k,v in ids.items() if v>nid-100}
    if rseen:last=max([q["n"] for q in segs if q["p"] in rseen],default=None)
-  rseen=None;err=0;dead=0;w=min(max(tgt/2,1),5)
+  rseen=None;err=0;e0=None;dead=0;w=min(max(tgt/2,1),5)
   if last is None:new=segs[-3:];lag=None
   elif segs[-1]["n"]<last:
    if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=segs[-3:];lag=None;pend=True
@@ -580,7 +581,7 @@ while not gone():
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
   else:new=[q for q in segs if q["n"]>last];lag=None
-  lim=max(2.5*tgt,10)
+  lim=max(2*tgt,10)
   if new:stalled=False
   if new:fresh=got=mono()
   elif mono()-got>lim:handoff("no new video for %ds"%(mono()-got))
@@ -615,12 +616,13 @@ while not gone():
    save()
   time.sleep(w)
  except Exception as e:
-  if mono()-got>max(2.5*tgt,10):
-   handoff("feed unreachable for %ds"%(mono()-got))
-   if not stalled:err=0;continue
+  if e0 is None:e0=mono()
+  if mono()-got>max(2*tgt,10) or (not stalled and mono()-e0>5):
+   handoff("feed unreachable for %ds"%(mono()-e0))
+   if not stalled:err=0;e0=None;continue
   err+=1;media=None;rs=getattr(e,"response",None);c=getattr(rs,"status_code",0);ra=rs.headers.get("Retry-After","") if rs is not None else ""
   dl=min(int(ra),30) if ra.isdigit() else (min(2*err,10) if c in BUSY else min(err,5))
-  if not stalled:dl=max(0.5,min(dl,max(2.5*tgt,10)-(mono()-got)))
+  if not stalled:dl=max(0.5,min(dl,max(2*tgt,10)-(mono()-got),5.5-(mono()-e0)))
   log("playlist error (%s); retry %d in %ds"%(e,err,dl));time.sleep(dl)
 bye()' {streamUrl} {userAgent} {channelId}
 ```
