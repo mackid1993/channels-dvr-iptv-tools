@@ -797,13 +797,24 @@ the next sync renames them back to the provider's name.
 
 Repeat for every auto-synced group.
 
-### Channels you created yourself
+### Renaming every channel at once (bulk edit)
+
+Use this for channels you created yourself, or to rename everything in one pass. (Channels made
+by Auto Channel Sync are renamed back on the next sync, so set the group's Name Transforms above
+for those as well.)
 
 1. Open **Channels**.
-2. Tick the channels to rename (the checkbox in the header selects all channels shown).
-3. Press **Edit** above the table to open the bulk edit for the selected channels.
-4. Under **Channel Name**, put the pattern in **Find (Regex)** and leave **Replace** empty.
-5. Save. Dispatcharr renames every selected channel.
+2. Select all the channels:
+   - **If they fit on one page:** set **Page Size** at the bottom of the table to its largest value
+     (500), then tick the checkbox in the table header to select every channel shown.
+   - **If they span several pages:** tick the checkbox of the first channel, press the button that
+     jumps to the last page, then **Shift-click** the checkbox of the last channel. Shift-click
+     selects every channel in between.
+3. Press **Edit** above the table. The bulk edit opens and shows **Selection: N channels**. Check
+   that N is the number of channels you meant to rename before going on.
+4. Under **Channel Name**, put `^[^|]*\|\s*` in **Find (Regex)** and leave **Replace** empty.
+5. Save. Dispatcharr renames all the selected channels in one go. Channels without a `|` in their
+   name are left as they are, so it is safe to include them in the selection.
 
 Renaming only changes the name shown in Channels DVR. Gracenote station IDs, channel numbers,
 streams and backup streams are not affected, and the station ID matcher and backup streams apps
