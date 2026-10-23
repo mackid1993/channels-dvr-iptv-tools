@@ -23,8 +23,8 @@ Tk (tkinter). On launch the script checks for it and, if it is missing,
 offers to install it (Homebrew, winget, apt/dnf/pacman/zypper) or switches
 to another Python on the machine that already has it.
 
-    python3 channels_dvr_stationid_matcher.py          (macOS / Linux)
-    py channels_dvr_stationid_matcher.py               (Windows, or double-click)
+    python3 dispatcharr_stationid_matcher.py           (macOS / Linux)
+    py dispatcharr_stationid_matcher.py                (Windows, or double-click)
     ... --check-deps    only report what would be installed, change nothing
     ... --yes           install missing dependencies without asking
 """
@@ -53,7 +53,9 @@ import urllib.request
 TIMEOUT = 30
 PROBE_TIMEOUT = 8  # first contact with each server, so a wrong IP fails fast
 CACHE_DAYS = 7
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".channels_dvr_stationid_matcher")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".dispatcharr_stationid_matcher")
+# Folder used before this app was renamed from channels_dvr_stationid_matcher.py
+OLD_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".channels_dvr_stationid_matcher")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")   # autosaved picks
 LOG_DIR = os.path.join(CONFIG_DIR, "logs")
@@ -2009,7 +2011,17 @@ def ensure_dependencies(assume_yes=False, check_only=False):
     raise SystemExit(_manual_help())
 
 
+def migrate_config_dir():
+    """Move settings from the folder used before the rename, once."""
+    if os.path.isdir(OLD_CONFIG_DIR) and not os.path.exists(CONFIG_DIR):
+        try:
+            os.rename(OLD_CONFIG_DIR, CONFIG_DIR)
+        except OSError:
+            pass
+
+
 def main():
+    migrate_config_dir()
     setup_logging()
     log.info("Starting %s on %s, Python %s", os.path.basename(__file__), sys.platform,
              sys.version.split()[0])
