@@ -414,17 +414,48 @@ encoder does:
 You watch about 60 seconds behind live on providers with 10-second segments (less on providers
 whose playlists are short).
 
+### HLS in, MPEG-TS out
+
+This is the part people mix up, so in plain English:
+
+- **From your IPTV provider into Dispatcharr: HLS.** Your provider's stream URLs must be HLS
+  (they end in `.m3u8`). That's what the profile reads.
+- **From Dispatcharr out to Channels DVR: MPEG-TS.** The profile always turns the stream into
+  MPEG-TS. Leave Dispatcharr's output on MPEG-TS, and set the Channels DVR source's
+  **Stream Format** to **MPEG-TS**.
+
+```
+ IPTV provider  --HLS (.m3u8)-->  Dispatcharr + this profile  --MPEG-TS-->  Channels DVR
+```
+
+Dispatcharr 0.33 and newer can also *send* HLS to clients (**Settings > Stream Settings >
+Default Output Format**, or a user's **Output Format Override**). **Don't use it with this
+profile.** Keep the output format on MPEG-TS:
+
+- The profile is built and tested for MPEG-TS output to Channels DVR. Its tuner-sharing head
+  start depends on it.
+- Dispatcharr's own release notes say HLS output can't tell when a player has closed, so a
+  channel can keep a provider connection busy after everyone stops watching. They recommend
+  MPEG-TS unless a client specifically needs HLS.
+- Channels DVR plays MPEG-TS from Dispatcharr directly, with the lowest delay.
+
+Channels DVR's own **Stream** playback setting in its apps (HLS between the Channels DVR server
+and a device) is a separate thing. It doesn't change what Dispatcharr sends, and you can leave
+it at its default.
+
 ### Requirements
 
 - **Channels DVR**, with Dispatcharr added as a **Custom Channels** M3U source using Dispatcharr's
-  M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**.
+  M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**, with
+  Dispatcharr's output format left on **MPEG-TS** (see [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)).
   Dispatcharr must be able to reach the Channels DVR server on port 8089.
 - **Dispatcharr 0.32 or newer** (tested on 0.32.0). The profile uses Python, the `requests`,
   `psycopg` and `redis` modules and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is
   installed. It reads each channel's UUID and backup streams from Dispatcharr's own database, and
   its client list from Dispatcharr's Redis, using settings Dispatcharr already passes to its
   stream processes.
-- **Your provider's stream URLs must be HLS**, ending in `.m3u8`. Check under **Streams** in
+- **Your provider's stream URLs must be HLS**, ending in `.m3u8`. This is only what Dispatcharr
+  receives from the provider; what it sends to Channels DVR stays MPEG-TS. Check under **Streams** in
   Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
   HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
   fails with `response is not an m3u8 playlist` in the Dispatcharr log; keep those channels on a
