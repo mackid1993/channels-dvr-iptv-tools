@@ -113,6 +113,53 @@ Fuzzy matches are never saved automatically. Anything uncertain needs your pick.
 - **Cancel button**, clear error messages for wrong addresses or credentials, and a log file.
 - **CSV export** of whatever is still unmatched.
 
+### Tuner sharing and the buffer, step by step
+
+Channels DVR shares one tuner (one connection to Dispatcharr) between every device watching the
+same channel. A device that joins later starts at the newest video Channels DVR has, so it can't
+use a cushion that built up in the first player. The profile handles this by keeping the cushion
+on the server and sizing what it hands out to the devices actually watching:
+
+1. **First tune.** The profile joins the provider's whole playlist window, about 60 seconds of
+   video on 10-second segments. It sends about 1 second ahead of real time to Channels DVR and
+   keeps the other ~59 seconds as its reserve.
+2. **Steady state.** Video goes out at exactly real time, paced by its timestamps. When the
+   provider is late, the reserve covers the wait; when the provider catches up, the profile
+   downloads the missed segments quickly and the reserve refills. Viewers don't see either.
+3. **Counting viewers.** Every 2 seconds the profile asks Channels DVR how many devices are
+   reading this channel's tuner (`/dvr/activity`).
+4. **A device joins.** When the count goes up, the profile immediately sends an extra 5 seconds
+   out of the reserve. Channels DVR passes it to every device on the tuner, so the newcomer
+   starts with a cushion and the devices already watching gain one too. This happens on every
+   join, including a device coming back after leaving.
+5. **A device leaves.** Nothing is taken back. The output never slows or pauses, so the devices
+   still watching keep their cushion.
+6. **The floor.** Head starts stop when the reserve is down to about 20 seconds (two segments on
+   10-second segments), which is what's needed to ride out a late segment and fail over. A device
+   joining at the floor gets only its own startup buffer, and the log says `reserve at its floor`.
+7. **The rebuild.** Once no device has joined for 2 minutes and the reserve is under 30 seconds,
+   the profile sends video about 1% slower than real time. The players drain their extra
+   cushion a little faster than it's topped up, so it moves back into the reserve: about 10
+   seconds every 17 minutes. It stops when the reserve is back to 30 seconds, or when the
+   players' lead is down to one join's worth (about 6 seconds). A 1% speed change is too small
+   to see or hear, and the output never stops.
+8. **Channel stops.** When the last device leaves, Dispatcharr ends the stream. The next tune
+   starts fresh with the full reserve.
+
+Example on a channel with 10-second segments:
+
+| What happens | Lead in the players | Reserve in the profile |
+|---|---|---|
+| TV tunes the channel | 1 s | 59 s |
+| Laptop joins | 6 s | 54 s |
+| Laptop leaves | 6 s | 54 s |
+| Laptop joins again | 11 s | 49 s |
+| Phone joins, then more joins over the evening | up to 40 s | down to the 20 s floor |
+| No joins for 2 minutes, reserve under 30 s | eases down by about 1% | rebuilds to 30 s |
+
+If the profile can't identify the channel in Channels DVR (see **Finds the channel in Channels DVR on its own** above), it doesn't count viewers
+and every device gets the single-viewer 1-second lead. Playback is otherwise unaffected.
+
 ### Requirements
 
 - **Python 3.8 or newer.**
