@@ -1735,7 +1735,7 @@ def run_gui():
                 bad = 0
                 for i, want, got, err in out:
                     r = self.rows[i]
-                    if got is not None:
+                    if not err:   # as before: only a verified write updates the row
                         r["cur"] = got
                         r["picked"] = [s for s in r["picked"] if s not in got]
                         r["drop"] = [s for s in r["drop"] if s in got]
