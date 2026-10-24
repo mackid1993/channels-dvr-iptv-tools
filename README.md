@@ -325,10 +325,18 @@ encoder does:
   shared tuner gets the same stream.
 - **A small head start for the players, sized for Channels DVR.** One viewer gets about 1 second
   ahead (more on low-bitrate channels, so Dispatcharr's ~256 KB chunks never leave the player
-  short). Each extra Channels DVR device watching the same channel adds 5 seconds, sent to every
-  device on that tuner, so a device that joins late still gets a cushion. The extra lead is kept
-  until the channel stops, so a device leaving never drains the others. The reserve never drops
-  below about 20 seconds, however many devices join.
+  short). Every time another Channels DVR device joins the channel, including one rejoining
+  after another left, the profile sends a 5-second head start out of its reserve. Channels DVR
+  shares one connection per tuner, so every device on it gets the extra cushion, and a device
+  that joins late doesn't start empty. A device leaving never takes the cushion back, so the
+  others never drain.
+- **The reserve has a floor and rebuilds itself.** Head starts stop once the reserve is down to
+  about 20 seconds, so late segments from the provider are always covered (a device joining at
+  the floor gets only its own startup buffer). When no device has joined for 2 minutes and the
+  reserve is under 30 seconds, the profile sends video about 1% slower than real time, which is
+  too small to see or hear. The players' extra cushion slowly moves back into the reserve, about
+  10 seconds every 17 minutes, without ever pausing the output. Tuning the channel fresh starts
+  with the full reserve.
 - **Finds the channel in Channels DVR on its own.** It finds your Channels DVR server from
   Dispatcharr's client list (the client whose user agent is Channels DVR), finds the Channels DVR
   source whose URL is a Dispatcharr M3U output (`/output/m3u/...`), and locates this channel in
@@ -427,7 +435,8 @@ with `[hlsloop stream]`:
 | Message | Meaning |
 |---|---|
 | `viewer buffer: this stream is Channels DVR <source> ch N` | The profile found this channel in Channels DVR. |
-| `viewer buffer: N viewers on Channels DVR ch N, client lead raised to Ns` | Another device joined; every device on the tuner got the extra head start. |
+| `viewer buffer: N viewers on Channels DVR ch N, sent the new viewer a Ns head start (lead now Ns, reserve Ns)` | Another device joined; every device on the tuner got the extra head start. `reserve at its floor` means the reserve was too low to give the full 5 seconds. |
+| `viewer buffer: reserve rebuilt to Ns` | The reserve finished refilling after joins used part of it. |
 | `viewer buffer: Channels DVR source <source> is out of date, refreshing it` | The Channels DVR source didn't match Dispatcharr's playlist, so the profile refreshed it. |
 | `viewer buffer: off ...` | The viewer buffer is off for this stream (the reason follows); playback is unaffected and uses the single-viewer head start. |
 | `catching up N segments` | The provider stalled; the profile downloaded what it missed and refilled the reserve. |
@@ -477,7 +486,7 @@ except ImportError:print("[hlsloop] python requests module not found",file=sys.s
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;nv=1;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic()
+mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic()
 def log(m):print("[hlsloop stream]",m,file=sys.stderr,flush=True)
 ff=None;sig=None;cmap=None;off=0.0
 def remux(why=None):
@@ -583,13 +592,13 @@ st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;nv=max(1,int(j.get("nv",1)));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;xb=float(j.get("xb",0.0));pk=max(1,int(j.get("pk",1)));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"nv":nv,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -642,9 +651,9 @@ def clcap():
  return max(min(CL,dp*2/3),dp-2*tgt)
 def cushlim():
  dp=dep or 3*tgt
- return max(min(3*tgt,dp-min(CL+JB*(nv-1),clcap())),2*tgt)
+ return max(min(3*tgt,dp-min(CL+xb,clcap())),2*tgt)
 def watch():
- global nv
+ global xb,pk,lj
  if not chid.isdigit():return
  e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set()
  def say(k,m):
@@ -692,8 +701,14 @@ def watch():
     if tu.get("device_id")==dev and str(tu.get("channel"))==num:k=max(k,int(tu.get("readers") or 1))
    if k:seen=mono()
    elif seen is None and mono()-t0>90:say("unseen","off (ch %s never showed up as playing in Channels DVR)"%num);return
-   if k and k>nv:
-    nv=k;log("viewer buffer: %d viewers on Channels DVR ch %s, client lead raised to %.0fs (kept until the channel stops)"%(k,num,CL+JB*(nv-1)))
+   if k and k>pk:
+    room=max(clcap()-CL-xb,0.0);add=min(JB*(k-pk),room);xb+=add;lj=mono()
+    log("viewer buffer: %d viewers on Channels DVR ch %s, sent the new viewer a %.0fs head start (lead now %.0fs, reserve %.0fs)"%(k,num,add,CL+xb,(dep or 3*tgt)-CL-xb)+("" if add>=JB*(k-pk) else ", reserve at its floor"))
+   if k:pk=k
+   dp=dep or 3*tgt
+   if xb>JB and mono()-lj>120 and dp-CL-xb<RF:
+    xb=max(JB,xb-0.02)
+    if xb==JB or dp-CL-xb>=RF:log("viewer buffer: reserve rebuilt to %.0fs"%(dp-CL-xb))
    fails=0
   except Exception as x:
    fails+=1
@@ -741,7 +756,7 @@ def writer():
      remux(it[1]);lead=max(lead-3.0,-3.0)
     else:put(it[1])
     continue
-   dp=dep or 3*tgt;cl=min(max(CL,255868*it[2]/max(len(it[1]),1)+0.5)+JB*(nv-1),clcap())
+   dp=dep or 3*tgt;cl=min(max(CL,255868*it[2]/max(len(it[1]),1)+0.5)+xb,clcap())
    if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
    d=it[1]
    if len(it)<7:it.append(tix(d))
