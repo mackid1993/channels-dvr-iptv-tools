@@ -489,10 +489,13 @@ def pts0(d):
  except Exception:pass
  return None
 keys={};warned=set()
+def tsok(q,d):
+ if not q["m"] and d[:3]!=b"ID3" and not (d[:1]==b"\x47" and (len(d)<189 or d[188]==0x47)):raise ValueError("segment is not MPEG-TS (%d bytes)"%len(d))
+ return d
 def fetch(q):
  h={"Range":"bytes=%d-%d"%(q["b"][1],q["b"][1]+q["b"][0]-1)} if q["b"] else {}
  r=s.get(q["u"],headers=h,timeout=(3,5));r.raise_for_status();d=r.content;k=q["k"]
- if not k:return d
+ if not k:return tsok(q,d)
  if k[0]!="AES-128":
   if k[0] not in warned:log("unsupported encryption "+k[0]+", passing through");warned.add(k[0])
   return d
@@ -500,7 +503,7 @@ def fetch(q):
  from cryptography.hazmat.primitives.ciphers import Cipher,algorithms,modes
  iv=int(k[2],16).to_bytes(16,"big") if k[2] else q["s"].to_bytes(16,"big")
  c=Cipher(algorithms.AES(keys[k[1]]),modes.CBC(iv)).decryptor();d=c.update(d)+c.finalize()
- return d[:-d[-1]] if d and 0<d[-1]<=16 else d
+ return tsok(q,d[:-d[-1]] if d and 0<d[-1]<=16 else d)
 st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()).hexdigest()+".json"
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
@@ -510,8 +513,9 @@ except Exception:pass
 hasseq=True
 def save():
  try:
-  with sl,open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"t":time.time()},f)
-  os.replace(st+".tmp",st)
+  with sl:
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"t":time.time()},f)
+   os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
  while run:
@@ -548,7 +552,7 @@ def bye():
 for g in (15,2,1):signal.signal(g,lambda*a:(ff and ff.kill(),os._exit(0)))
 if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
-media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0
+media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0;ph=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
 def join(segs):
  global dep
@@ -597,8 +601,8 @@ while not gone():
   v=[(int(m.group(1)) if (m:=bw.search(x)) else 0,L[i+1]) for i,x in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
   if v:media=up.urljoin(r.url,max(v)[1]);continue
   if "#EXT-X-ENDLIST" in L:
-   handoff("provider is serving an offline placeholder")
-   time.sleep(5 if stalled else 1)
+   ph+=1;handoff("provider is serving an offline placeholder")
+   time.sleep(5 if stalled else min(ph,10))
    continue
   media=r.url;seq=0;hasseq=False;tgt=10;segs=[];key=None;mp=None;br=None;pe={};dur=0.0
   for x in L:
@@ -660,7 +664,7 @@ while not gone():
    o=0
    if rpart and rpart[0]==n and rpart[1]<len(d):o=rpart[1]-rpart[1]%188;rpart=None
    enq(["seg",d,q["d"] or tgt,n,p0,o])
-   last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False
+   last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   time.sleep(w)
  except Exception as e:
