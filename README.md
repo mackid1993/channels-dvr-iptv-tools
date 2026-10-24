@@ -77,7 +77,11 @@ If you already run one, use it; both work with Channels DVR. If you're choosing:
    - **Review** (yellow): several stations share the name, or the name is only similar. Never
      ticked for you.
    - **Unmatched** (red): nothing similar in your lineups.
-4. Let you fix the rest by hand, one channel at a time, with numbered suggestions.
+   - **Current ID not in lineups** (gray): the channel already has an ID that isn't in your
+     cable, satellite or OTA lineups, which is normal for streaming channels. It is left alone and
+     doesn't count as needing attention.
+4. Let you fix the rest by hand: the table starts on **Needs attention**, and each channel shows
+   numbered suggestions.
 5. Save the IDs you ticked after you confirm, then read them back to verify every one.
 
 Fuzzy matches are never saved automatically. Anything uncertain needs your pick.
@@ -86,20 +90,25 @@ Fuzzy matches are never saved automatically. Anything uncertain needs your pick.
 
 - **Multiple countries at once** (`USA:10001, CAN, GBR:SW1A`), for lists that mix them. Lineups
   from all of them are merged into one index.
-- **Guided walkthrough** for unmatched channels: press 1-9 to pick, Esc to skip, Back, search
-  your lineups or all of Gracenote, or type an ID.
+- **Fast review**: click a channel, then click a station (or press 1-9 to pick it and jump to the
+  next channel). Return moves on without a change. The search box above the station list looks
+  through your lineups, or all of Gracenote, and you can also type an ID. Stations outside your
+  lineups can be picked like any other.
 - **Word-order independent matching** that handles names like "Nat Geo Wild HD", "C-SPAN 2",
   "QVC 2", run-together names like "SHOXBET", and provider prefixes like `US|`.
-- **Gracenote-wide search** when nothing in your lineups is a good match, clearly labelled
-  "NOT in your lineups".
+- **Gracenote-wide search** when nothing in your lineups is a good match, clearly labeled
+  "not in your lineups".
 - **Fix or remove existing IDs**: channels that already have an ID are included, a different pick
   shows as "Will replace ID", and **Remove ID** clears one. The confirmation lists every
   replacement and removal.
-- **Filters**: group dropdown, Find box (name, ID, group, or a channel-number range like
-  `500-600`), sortable columns.
+- **Bulk changes**: Shift-click or Cmd/Ctrl-click several channels, then **Tick selected**,
+  **Untick selected** or **Mark reviewed**. Right-click a channel for more actions.
+- **Filters** with live counts (Needs attention, Ticked, Left as is and every status), a group
+  dropdown, a Find box (name, ID, group, or a channel-number range like `500-600`) and sortable
+  columns. Columns can be dragged as wide as you like.
 - **Your work is autosaved** and offered back after a restart or crash.
-- **Your servers and API key are remembered** between runs (see
-  [Where data is stored](#where-data-is-stored)).
+- **Your servers and API key are remembered** between runs, and the app connects by itself at
+  launch when they are complete (see [Where data is stored](#where-data-is-stored)).
 - **Cancel button**, clear error messages for wrong addresses or credentials, and a log file.
 - **CSV export** of whatever is still unmatched.
 
@@ -161,9 +170,12 @@ about a minute while lineups are read; after that they are cached for 7 days.
 1. Run `dispatcharr_stationid_matcher.py`.
 2. Enter the **Dispatcharr** address (port 9191 is assumed) and the **API key**, or a username
    and password.
-3. Press **Connect & Match**.
-4. Review the table, use **Match unmatched one by one…** for the rest, then
-   **Write ticked IDs to Dispatcharr**.
+3. Press **Connect & Match**. Once connected, the form folds into a one-line bar with
+   **Connection…** and **Reload**.
+4. Work through **Needs attention**: pick a station for each channel (click, or 1-9 to pick and
+   move on), or press Return to leave it as is. **Match unmatched one by one…** jumps to the first
+   one.
+5. Press **Write N channels to Dispatcharr…** (Cmd/Ctrl-S) and confirm.
 
 For channels Dispatcharr created from an M3U (auto-sync), the station ID is written as a channel
 **override**; otherwise the next M3U refresh would overwrite it with whatever the provider sends.
@@ -219,16 +231,18 @@ applied.
    live on its channels. Custom and merged playlists are refused; they pick up the IDs from that
    playlist automatically.
 2. Paste the **API token** and press **Connect & Match**.
-3. Review the table, use **Match unmatched one by one…** for the rest, then press
-   **Copy ticked IDs for m3u-editor**.
-4. In m3u-editor open **Extensions > Extensions > Gracenote Station IDs > Actions > Apply Station
-   IDs**, pick the playlist, paste, and confirm.
-5. When the run shows as completed under Run History, press **Verify in m3u-editor** in the app.
-   Anything not applied yet stays ticked.
+3. Work through **Needs attention** (click a station, or 1-9 to pick and move on), or use
+   **Match unmatched one by one…** for a guided pass. Then press **Copy N IDs for m3u-editor…**
+   (Cmd/Ctrl-S) and confirm.
+4. The **Apply in m3u-editor** window lists every change and the steps: in m3u-editor open
+   **Extensions > Extensions > Gracenote Station IDs > Actions > Apply Station IDs**, pick the
+   playlist, paste, and confirm. **Open m3u-editor** and **Copy again** are in that window.
+5. When the run shows as completed under Run History, press **Verify in m3u-editor**. Anything not
+   applied yet stays ticked.
 
 The app reads each channel's current station ID from the playlist output, because the API doesn't
-return it. A channel hidden from the output (for example disabled) shows no current ID; the app
-warns when that happens. Picking an ID for it still works.
+return it. A channel hidden from the output (for example disabled) shows no current ID; the status
+line says when that happens. Picking an ID for it still works.
 
 #### Channels DVR source settings for m3u-editor
 
@@ -248,13 +262,14 @@ Each app keeps its own folder in your home directory:
 
 The folder name starts with a dot, so it is hidden by default on macOS and Linux. Open it with
 `open ~/.<folder>` (macOS) or `xdg-open ~/.<folder>` (Linux), or press Cmd-Shift-. in Finder. On
-Windows, paste the path into Explorer's address bar. The **Open log** button opens the log
+Windows, paste the path into Explorer's address bar. **File > Open log** opens the log
 directly.
 
 | File | Contents |
 |---|---|
 | `settings.json` | Server addresses, countries, and your API key or token (Dispatcharr: also the username, never the password). Readable only by your user account. |
 | `session.json` | Autosaved picks, used for the restore prompt. |
+| `window.json` | Window size and layout. |
 | `station_ids_to_apply.txt` | m3u-editor only: the last set of IDs copied for the plugin. |
 | `index_<COUNTRY><POSTAL>.json` | Cached lineup data, refreshed after 7 days. |
 | `logs/matcher.log` | Rotating log. Passwords, API keys and tokens are never logged. |
@@ -691,12 +706,12 @@ through Dispatcharr's API.
 
 Nothing is specific to one provider or one channel name; it works with any M3U or Xtream source.
 
-- **Pre-ticked ("Backups found")** only on strong evidence: the same channel name once provider
+- **Pre-ticked ("Ready to write")** only on strong evidence: the same channel name once provider
   prefixes (`US|`, `U.S|`, `TV|`) and quality words (HD, FHD, 4K, RAW) are ignored, the same call
   sign (for example `(WNBC)`), or the same provider guide ID (`tvg-id`). The guide ID is what
   catches renamed channels, such as an old "MSNBC" feed and a new "MS NOW" feed that the provider
   still tags with the same ID.
-- **"Check suggestions"** are similar names the app isn't sure about. They are never ticked for
+- **"Suggestions to check"** are similar names the app isn't sure about. They are never ticked for
   you.
 - **East and West/Pacific/Mountain/Central feeds are never mixed.** A name without a region counts
   as the East feed. A channel with a call sign in its name only matches that call sign.
@@ -716,45 +731,58 @@ py dispatcharr_backup_streams.py
 
 It needs Python 3.8+ with Tk, like the matcher apps (see [Requirements](#requirements)). Enter the
 Dispatcharr address (port 9191 is assumed) and an API key, or a username and password, then press
-**Connect & Match**. The API key is the same one the Dispatcharr matcher uses
+**Connect**. Once connected, the form folds into a one-line bar with **Reload** and
+**Connection…**, and the next launch connects by itself when an API key is saved. The API key is the same one the Dispatcharr matcher uses
 ([how to get it](#get-a-dispatcharr-api-key)).
 
 ### Review and write
 
-- **Show** filter: **Needs attention** (check suggestions, nothing found and errors), one entry per
-  status (Backups found, Check suggestions, Nothing found, Already has backups, Written, Error), and
-  Ticked to write.
-  Plus a **Group** filter, a **Find** box (name, stream, channel number or a range like
-  `500-600`) and sortable columns.
-- Select a channel to see its backups in the panel below:
-  - Cmd-click (Ctrl-click on Windows and Linux) or Shift-click to select several lines, then
-    **Tick selected** or **Untick selected**. Double-click toggles one line.
-  - The channel's existing backups are listed too. Untick one to mark it for removal; it is
-    removed on the next Write. The main stream can never be removed.
-  - Search on the right, select one or more streams and press **Add selected streams as
-    backups**. Streams already on the channel are hidden from the results.
-  - **Confirm this channel** accepts it and moves to the next one. Channels under Needs attention
-    stay there until you confirm them. **Un-confirm** puts one back.
-- **Approve selected** and **Approve all shown** tick every suggestion on the selected channels (or
-  every channel shown) and confirm them in one step. Select rows with Cmd/Ctrl-click, Shift-click
-  or Cmd/Ctrl-A. A handy pass: filter to **Check suggestions**, review, then Approve all shown.
-- **Write ticked backups to Dispatcharr** saves everything that is ticked and confirmed. The main
-  stream always stays first. Every channel is read back afterwards to confirm the change.
+1. Channels with sure backups are ticked for you and show green, **Ready to write**. After
+   loading, the **Show** filter starts on **Needs attention** (suggestions to check, nothing found
+   and errors). Each filter entry shows its count.
+2. Click a channel. The panel below lists its streams: the main stream first (it always stays
+   first), then its current backups, then the suggestions. **Click a line to tick or untick it.**
+   Yellow lines are only similar names, so check them. Unticking a current backup marks it for
+   removal on the next Write.
+3. To add any other stream, type in the search box on the right (it is pre-filled with the
+   channel's name) and **double-click** a result, or select several and press **Add as backup**.
+   Streams already on the channel are hidden from the results.
+4. Press **Return** (or **Done, next**) to move to the next channel. A channel you leave without
+   ticking anything becomes **Left as is** and drops out of Needs attention.
+5. Press **Write N channels to Dispatcharr** (Cmd/Ctrl-S). The button always shows how many
+   channels will be written. The main stream always stays first, and every channel is read back
+   afterwards to confirm the change.
+
+Working on many channels at once:
+
+- Select several channels with Cmd-click (Ctrl-click on Windows and Linux), Shift-click or
+  Cmd/Ctrl-A, then use **Tick selected** or **Untick selected** to put them in or leave them out of
+  the next Write. Clicking a channel's **Write** column, or pressing Space, toggles one.
+- **Tick all suggestions** ticks every suggestion on the selected channels, including the
+  uncertain ones. **Mark reviewed** takes the selected channels out of Needs attention as they are.
+  The **Channels** menu (and right-click on a channel) has the same actions plus versions for
+  every channel shown, **Clear changes** and **Reset** (back to what the matcher ticked).
+- There is also a **Group** filter, a **Find** box (name, stream, channel number or a range like
+  `500-600`) and sortable columns. Columns can be dragged as wide as you like; the table scrolls
+  sideways. Drag the divider between the table and the panel to resize them.
 
 Anything the app can't do (nothing selected, everything already on the channel, and so on) is shown
-in red in the status line instead of silently doing nothing.
+in red in the status line instead of silently doing nothing. **Help > Keyboard shortcuts** lists
+every shortcut.
 
 ### Autosave and undo
 
-- **Autosave:** every tick, add, removal and confirmation is saved as you make it, and again when
-  you close the window. The next Connect & Match offers to restore unsaved work. Written channels
-  drop out of the saved work.
+- **Autosave:** every tick, add, removal and review is saved as you make it, and again when you
+  close the window. The next launch offers to restore unwritten work; **Reload** keeps it without
+  asking. Written channels drop out of the saved work.
 - **Undo:** before each Write, the original stream lists of the channels being changed are saved
-  to an `undo_<date>.json` file. **Undo a previous run…** puts them back.
+  to an `undo_<date>.json` file. **Undo a write…** lists them by date with the channels they
+  touched, puts back the one you pick, and reloads.
 
 Files are kept in `~/.dispatcharr_backup_streams/` (Windows:
 `%USERPROFILE%\.dispatcharr_backup_streams\`): `settings.json` (address and API key, readable only
-by your user account), `session.json` (autosaved work), `undo_*.json` and `logs/backup_streams.log`.
+by your user account), `session.json` (autosaved work), `window.json` (window size and layout),
+`undo_*.json` and `logs/backup_streams.log`. **File > Open data and log folder** opens it.
 
 ### Adding a backup by hand
 

@@ -56,6 +56,7 @@ CACHE_DAYS = 7
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".m3u_editor_stationid_matcher")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")   # autosaved picks
+UI_FILE = os.path.join(CONFIG_DIR, "window.json")         # window size and layout
 LOG_DIR = os.path.join(CONFIG_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "matcher.log")
 
@@ -73,6 +74,16 @@ def write_private_json(path, data):
     except OSError:
         pass
     os.replace(tmp, path)
+
+
+def read_json(path):
+    """A JSON object from a file, or {} if it is missing, unreadable or not an object."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def setup_logging():
@@ -173,7 +184,7 @@ USER_PICK = ("picked by you", "entered by you")
 # HTTP
 # ======================================================================
 
-class Cancelled(Exception):
+class Canceled(Exception):
     """The user pressed Cancel."""
 
 
@@ -192,7 +203,7 @@ class HttpError(RuntimeError):
 _tls = threading.local()  # per-worker cancel flag
 
 
-def _cancelled():
+def _canceled():
     evt = getattr(_tls, "cancel", None)
     return evt is not None and evt.is_set()
 
@@ -201,8 +212,8 @@ def _sleep(seconds):
     """Sleep that wakes up immediately on Cancel."""
     end = time.time() + seconds
     while time.time() < end:
-        if _cancelled():
-            raise Cancelled()
+        if _canceled():
+            raise Canceled()
         time.sleep(0.1)
 
 
@@ -257,8 +268,8 @@ def _http_once(method, url, headers, data, timeout):
             raise err from None
         raise HttpError(f"{host} returned HTTP {e.code} for {path}: {body[:300]}", e.code, body) from None
     except (urllib.error.URLError, OSError, ValueError) as e:
-        if _cancelled():
-            raise Cancelled() from None
+        if _canceled():
+            raise Canceled() from None
         log.warning("%s %s -> failed after %.2fs: %r", method, path, time.time() - t0, e)
         raise NetError(f"Could not reach {host}: {_reason(e)}") from None
     log.debug("%s %s -> %s, %d bytes in %.2fs", method, path, code, len(raw), time.time() - t0)
@@ -267,8 +278,8 @@ def _http_once(method, url, headers, data, timeout):
 
 def http(method, url, headers=None, body=None, timeout=TIMEOUT, retries=2):
     """JSON request with retries on network errors and HTTP 429/5xx."""
-    if _cancelled():
-        raise Cancelled()
+    if _canceled():
+        raise Canceled()
     data = json.dumps(body).encode() if body is not None else None
     hdrs = {"Accept": "application/json"}
     if data is not None:
@@ -290,8 +301,8 @@ def http(method, url, headers=None, body=None, timeout=TIMEOUT, retries=2):
             log.info("Retrying %s %s in %.1fs (attempt %d of %d)", method, _path_of(url), wait,
                      attempt + 2, retries + 1)
             _sleep(wait)
-    if _cancelled():
-        raise Cancelled()
+    if _canceled():
+        raise Canceled()
     try:
         return json.loads(raw) if raw else None
     except ValueError:
@@ -364,7 +375,7 @@ def build_index(cdvr, country, postal, progress):
         lineups = http("GET", f"{cdvr}/tms/lineups/{country}/{urllib.parse.quote(postal)}")
     except RuntimeError as e:
         if "1005" in str(e) or "invalid_lineup" in str(e):
-            raise RuntimeError(f"Gracenote does not recognise postal code '{postal}' for {country}. "
+            raise RuntimeError(f"Gracenote does not recognize postal code '{postal}' for {country}. "
                                "UK uses the outward code only, e.g. SW1A.") from None
         raise
     if not isinstance(lineups, list) or not lineups:
@@ -402,7 +413,7 @@ def build_index(cdvr, country, postal, progress):
     cancel_evt = getattr(_tls, "cancel", None)
 
     def lookup(call):
-        _tls.cancel = cancel_evt  # pool threads honour Cancel too
+        _tls.cancel = cancel_evt  # pool threads honor Cancel too
         try:
             return search_stations(cdvr, call)
         except NetError:
@@ -440,7 +451,7 @@ def load_indexes(cdvr, pairs, progress, rebuild=False):
                      None if pct is None else ((n - 1) + pct / 100) / len(pairs) * 95)
         try:
             idx = load_index(cdvr, country, postal, sub, rebuild)
-        except (NetError, Cancelled):
+        except (NetError, Canceled):
             raise
         except RuntimeError as e:
             log.warning("No lineups for %s %s: %s", country, postal, e)
@@ -473,11 +484,12 @@ def load_index(cdvr, country, postal, progress, rebuild=False):
         try:
             with open(path, encoding="utf-8") as f:
                 idx = json.load(f)
-            if time.time() - idx.get("built", 0) < CACHE_DAYS * 86400:
+            if time.time() - idx.get("built", 0) < CACHE_DAYS * 86400 and isinstance(idx.get("stations"), dict) \
+                    and "lineups" in idx:
                 progress(f"Using cached lineup index ({len(idx['stations'])} stations)", 95)
                 return idx
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass  # unreadable cache: build it again
     log.info("Building lineup index for %s %s", country, postal)
     idx = build_index(cdvr, country, postal, progress)
     log.info("Index built: %d lineups, %d stations, local=%s", idx["lineups"],
@@ -1123,20 +1135,258 @@ class Matcher:
 # GUI
 # ======================================================================
 
+LEFT = "Left as is"   # shown for a channel you looked at and left without a pick
+ATTENTION = (REVIEW, UNMATCHED, ERROR, CHANGE)   # a current ID outside your lineups is fine (streaming)
+FILTERS = (("all", "All channels"), ("attention", "Needs attention"), ("ticked", "Ticked to apply"),
+           (MATCHED, MATCHED), (REVIEW, REVIEW), (UNMATCHED, UNMATCHED), (NOT_IN_LINEUP, NOT_IN_LINEUP),
+           (CHANGE, CHANGE), (REMOVE, REMOVE), (VERIFIED, VERIFIED), (LEFT, LEFT), (DELETED, DELETED))
+ROW_COLORS = {MATCHED: "#d9f2d9", REVIEW: "#fff2c2", UNMATCHED: "#f8d4d4", NOT_IN_LINEUP: "#e8e8e8",
+              VERIFIED: "#e8e8e8", ERROR: "#f4b6b6", DELETED: "#cccccc", CHANGE: "#ffd8a8",
+              REMOVE: "#e0c8f0", LEFT: "#efefef"}
+ON, OFF = "☑", "☐"
+COLS = ("write", "num", "channel", "group", "current", "status", "new", "gname", "call", "why")
+HEADS = ("Apply", "Ch #", "m3u-editor channel", "Group", "Current ID", "Status", "Station ID",
+         "Gracenote name", "Call sign", "Reason")
+WIDTHS = (52, 60, 240, 130, 80, 150, 80, 210, 90, 220)
+STATION_COLS = ("name", "call", "type", "where", "id")   # name on the left, station ID on the right
+STATION_HEADS = ("Gracenote name", "Call sign", "Type", "Where", "Station ID")
+STATION_WIDTHS = (240, 80, 90, 170, 90)
+HELP = """\
+1. Connect. Your Channels DVR server reads the Gracenote lineups for your \
+countries, and every channel of the m3u-editor playlist is matched against \
+them. Exact, unique matches are ticked for you (green, Matched).
+
+2. Work through "Needs attention". Click a channel, then click the right \
+station in the list under it (or press 1-9). If it isn't there, type in the \
+search box above the list: the list then shows the search results (tick "All \
+of Gracenote" to look outside your lineups; Esc brings the suggestions back). \
+You can also type a station ID. Press Return (or "Done, next") to go to the \
+next channel. A channel you leave without a pick becomes "Left as is".
+
+3. Press "Copy N IDs for m3u-editor". Nothing changes in m3u-editor yet. The \
+window that opens lists every replacement and removal, and the steps: in \
+m3u-editor run Gracenote Station IDs > Apply Station IDs, pick the playlist, \
+paste and confirm. Then press "Verify in m3u-editor".
+
+The Gracenote Station IDs plugin is installed in m3u-editor once: File > \
+Export m3u-editor plugin.
+
+Select several channels (Shift-click or {key}-click) and press Tick selected \
+or Untick selected to include them in the next copy or leave them out. Your \
+picks are autosaved, so closing the app loses nothing."""
+
+
 def _fmt_num(num):
     if isinstance(num, float) and num.is_integer():
         return int(num)
     return "" if num is None else num
 
 
+def _num_key(num):
+    try:
+        return (0, float(num))
+    except (TypeError, ValueError):
+        return (1, 0.0)
+
+
+def can_apply(r):
+    """True when the row has something the plugin would change."""
+    return bool((r.get("remove") and r["current"]) or (r["new_id"] and r["new_id"] != r["current"]))
+
+
+def to_apply(r):
+    return bool(r["write"] and can_apply(r))
+
+
+def display_status(r):
+    if r.get("reviewed") and not r["write"] and r["status"] in ATTENTION:
+        return LEFT
+    return r["status"]
+
+
 def run_gui():
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    import webbrowser
+    from tkinter import filedialog, font as tkfont, messagebox, ttk
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except (AttributeError, OSError):
+            pass
+    root = tk.Tk()
+    aqua = root.tk.call("tk", "windowingsystem") == "aqua"
+    MOD = "Command" if aqua else "Control"
+    KEY = "⌘" if aqua else "Ctrl+"
+
+    def allow_toggle_click(tree):
+        """Cmd/Ctrl-click toggles one row on every platform (Shift-click already selects a range)."""
+        def toggle(e):
+            iid = tree.identify_row(e.y)
+            if iid:
+                tree.selection_toggle(iid)
+                tree.focus(iid)
+            return "break"
+        for seq in ("<Command-Button-1>", "<Control-Button-1>", "<Meta-Button-1>", "<Mod1-Button-1>"):
+            if aqua and seq == "<Control-Button-1>":
+                continue   # Control-click is the right-click on a Mac
+            try:
+                tree.bind(seq, toggle)
+            except tk.TclError:
+                pass
+
+    def bind_right_click(widget, fn):
+        for seq in (("<Button-2>", "<Control-Button-1>") if aqua else ("<Button-3>",)):
+            widget.bind(seq, fn)
+
+    def scrolled_tree(parent, cols, heads, widths, fill_col, **kw):
+        """Treeview with both scrollbars. Columns never steal width from each other, so any
+        column can be dragged as wide as you like; the fill column takes up spare room."""
+        box = ttk.Frame(parent)
+        tree = ttk.Treeview(box, columns=cols, show="headings", **kw)
+        for c, h, w in zip(cols, heads, widths):
+            tree.heading(c, text=h, anchor="w")
+            tree.column(c, width=w, minwidth=30, anchor="w", stretch=False)
+        base = dict(zip(cols, widths))
+        vs = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        hs = ttk.Scrollbar(box, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vs.grid(row=0, column=1, sticky="ns")
+        hs.grid(row=1, column=0, sticky="ew")
+        box.rowconfigure(0, weight=1)
+        box.columnconfigure(0, weight=1)
+
+        def fit(shrink):
+            w = tree.winfo_width()
+            if w <= 1:
+                return
+            total = sum(tree.column(c, "width") for c in cols)
+            fw = tree.column(fill_col, "width")
+            if total < w:
+                tree.column(fill_col, width=fw + w - total)
+            elif shrink and total > w and fw > base[fill_col]:
+                tree.column(fill_col, width=max(base[fill_col], fw - (total - w)))
+        tree.bind("<Configure>", lambda e: fit(True), add="+")
+        tree.bind("<ButtonRelease-1>", lambda e: tree.after_idle(lambda: fit(False)), add="+")
+        return box, tree
+
+    class Tip:
+        """Small hover tooltip."""
+        def __init__(self, widget, text):
+            self.w, self.text, self.top, self.job = widget, text, None, None
+            widget.bind("<Enter>", self.schedule, add="+")
+            widget.bind("<Leave>", self.hide, add="+")
+            widget.bind("<ButtonPress>", self.hide, add="+")
+
+        def schedule(self, _e=None):
+            self.hide()
+            self.job = self.w.after(700, self.show)
+
+        def show(self):
+            self.job = None
+            if not self.w.winfo_exists():
+                return
+            x, y = self.w.winfo_rootx() + 8, self.w.winfo_rooty() + self.w.winfo_height() + 4
+            self.top = tk.Toplevel(self.w)
+            self.top.wm_overrideredirect(True)
+            self.top.wm_geometry(f"+{x}+{y}")
+            tk.Label(self.top, text=self.text, justify="left", bg="#ffffe0", fg="black", relief="solid",
+                     borderwidth=1, wraplength=360, padx=6, pady=3).pack()
+
+        def hide(self, _e=None):
+            if self.job:
+                self.w.after_cancel(self.job)
+                self.job = None
+            if self.top:
+                self.top.destroy()
+                self.top = None
+
+    class LiveSearch:
+        """Re-run a station search as the user types.
+
+        Local lineup results appear first; Gracenote-wide results follow when the local ones
+        are weak (or when wide() is on). The work runs in a background thread and reaches Tk
+        through the app's queue. Results from an older keystroke are dropped.
+        """
+
+        def __init__(self, app, var, render, wide=lambda: False, alive=lambda: True, delay=250):
+            self.app, self.var, self.render, self.wide, self.alive, self.delay = (
+                app, var, render, wide, alive, delay)
+            self.gen, self.job, self.mute, self.typed = 0, None, False, False
+            var.trace_add("write", self.changed)
+
+        def changed(self, *_):
+            if self.mute:
+                return
+            self.typed = True
+            self.schedule()
+
+        def schedule(self, delay=None):
+            if self.job:
+                self.app.root.after_cancel(self.job)
+            self.job = self.app.root.after(self.delay if delay is None else delay, self.run)
+
+        def stop(self):
+            if self.job:
+                self.app.root.after_cancel(self.job)
+                self.job = None
+            self.gen += 1
+
+        def set_quiet(self, value):
+            """Set the search box without starting a search."""
+            self.stop()
+            self.typed = False
+            self.mute = True
+            try:
+                self.var.set(value)
+            finally:
+                self.mute = False
+
+        def run(self):
+            self.job = None
+            self.gen += 1
+            gen, text = self.gen, self.var.get().strip()
+            app, matcher, cdvr = self.app, self.app.matcher, self.app.cdvr
+            if not self.alive():
+                return
+            if not text or not matcher:
+                self.render(None, text, "")
+                return
+            wide = bool(self.wide())
+
+            def post(fn):
+                app.q.put(("call", (None, lambda: gen == self.gen and self.alive() and fn())))
+
+            def work():
+                try:
+                    local = merge_candidates(matcher, text, matcher.search(text), matcher.suggest(text))
+                except Exception as e:  # a bad search must never break the window
+                    log.exception("Search %r failed", text)
+                    msg = f"Search failed: {e}"
+                    post(lambda: self.render([], text, msg))
+                    return
+                best = name_score(text, local[0]["name"], _bare_call(local[0])) if local else 0.0
+                more = bool(cdvr) and len(text) >= 2 and (wide or best < GOOD_LOCAL)
+                post(lambda: self.render(local, text, "looking in all of Gracenote…" if more else ""))
+                if not more:
+                    return
+                try:
+                    extra = app.wide_search(cdvr, matcher, text)
+                except Exception as e:  # only the extra suggestions are lost
+                    log.debug("Live Gracenote search %r failed: %s", text, e)
+                    msg = f"Gracenote-wide search failed: {e}"
+                    post(lambda: self.render(local, text, msg))
+                    return
+                merged = merge_candidates(matcher, text, local, extra, limit=30)
+                post(lambda: self.render(merged, text, ""))
+            threading.Thread(target=work, name="live-search", daemon=True).start()
 
     class App:
         def __init__(self, root):
             self.root = root
-            self.q = queue.Queue()
+            self.q = queue.Queue()   # worker threads never touch Tk; they post here
             self.rows = []           # one dict per channel
             self.matcher = None
             self.cdvr = None
@@ -1145,147 +1395,437 @@ def run_gui():
             self.busy = False
             self.job_id = 0
             self.job_kind = ""
+            self.job_quiet = False
             self.cancel_evt = None
             self.source = ""
             self._save_after = None
+            self.find_job = None
+            self.loaded_once = False
+            self.shown_i = None
+            self.cand_st = {}        # station ID -> station, for the suggestions list
+            self.cand_ids = []       # suggestions in order, for the 1-9 keys
+            self.wide_cache = {}
+            self.apply_win = None
+            self.sort_col, self.sort_rev = "num", False
+            self.filter_idx = 0
             root.title("Channels DVR - Gracenote Station ID Matcher for m3u-editor")
-            root.geometry("1250x780")
+            self.v = {k: tk.StringVar() for k in ("cdvr", "playlist", "token", "countries")}
+            self.include_existing = tk.BooleanVar(value=True)
+            self.ui = read_json(UI_FILE)
+            self.place_window()
             self._build()
             self._load_settings()
-            root.bind("<Escape>", lambda e: self.cancel())
-            root.protocol("WM_DELETE_WINDOW", self.on_close)
-            root.after(100, self._poll)
+            prev = root.report_callback_exception
+
+            def report(*exc):
+                log.critical("Unhandled error in the window", exc_info=exc)
+                try:
+                    self.note(f"Something went wrong: {exc[1]}. Details are in the log.", warn=True)
+                except tk.TclError:
+                    pass
+                prev(*exc)
+            root.report_callback_exception = report
+            root.after(60, self._poll)
             log.info("Window opened")
+            if self._can_autoconnect():
+                root.after(150, lambda: self.start(False, startup=True))
+            else:
+                self.note("Fill in your servers and press Connect & Match.")
+
+        # ------------------------------------------------------------ window
+        def place_window(self):
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            geo = self.ui.get("geometry")
+            m = re.fullmatch(r"(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)", geo or "")
+            if m and int(m.group(1)) <= sw and int(m.group(2)) <= sh:
+                self.root.geometry(geo)
+            else:
+                self.root.geometry(f"{min(1280, sw - 60)}x{min(820, sh - 90)}")
+            self.root.minsize(min(1080, sw - 40), min(640, sh - 80))
+
+        def save_ui(self):
+            try:
+                ui = {"geometry": self.root.geometry(), "vsash": self.vpane.sash_coord(0)[1]}
+                os.makedirs(CONFIG_DIR, exist_ok=True)
+                write_private_json(UI_FILE, ui)
+            except (OSError, tk.TclError) as e:
+                log.debug("Could not save the window layout: %s", e)
+
+        def place_sashes(self):
+            self.root.update_idletasks()
+            h = self.vpane.winfo_height()
+            if h > 400:
+                y = self.ui.get("vsash")
+                self.vpane.sash_place(0, 0, y if isinstance(y, int) and 140 < y < h - 240 else int(h * 0.52))
 
         # ------------------------------------------------------------ layout
         def _build(self):
+            self.build_menu()
+            bold = tkfont.nametofont("TkDefaultFont").copy()
+            bold.configure(weight="bold", size=bold.cget("size") + 2)
+            self.bold = bold
             pad = {"padx": 4, "pady": 3}
-            top = ttk.LabelFrame(self.root, text="Servers")
-            top.pack(fill="x", padx=8, pady=6)
-            self.v = {k: tk.StringVar() for k in
-                      ("cdvr", "playlist", "token", "countries")}
-            self.include_existing = tk.BooleanVar(value=True)
-            r = 0
-            ttk.Label(top, text="Channels DVR").grid(row=r, column=0, sticky="e", **pad)
-            ttk.Entry(top, textvariable=self.v["cdvr"], width=26).grid(row=r, column=1, **pad)
-            ttk.Label(top, text="m3u-editor playlist URL").grid(row=r, column=2, sticky="e", **pad)
-            ttk.Entry(top, textvariable=self.v["playlist"], width=52).grid(row=r, column=3, columnspan=3,
-                                                                          sticky="we", **pad)
-            r = 1
-            ttk.Label(top, text="Countries").grid(row=r, column=0, sticky="e", **pad)
+
+            # servers: full form until connected, then a one-line summary
+            self.top_holder = ttk.Frame(self.root)
+            self.top_holder.pack(side="top", fill="x", padx=10, pady=(8, 2))
+            top = self.conn = ttk.LabelFrame(self.top_holder, text="Servers", padding=(8, 4))
+            ttk.Label(top, text="Channels DVR").grid(row=0, column=0, sticky="e", **pad)
+            e_cdvr = ttk.Entry(top, textvariable=self.v["cdvr"], width=22)
+            e_cdvr.grid(row=0, column=1, sticky="we", **pad)
+            Tip(e_cdvr, "Address of your Channels DVR server, e.g. 192.168.1.10 (port 8089 is assumed).")
+            ttk.Label(top, text="Countries").grid(row=0, column=2, sticky="e", **pad)
             cf = ttk.Frame(top)
-            cf.grid(row=r, column=1, sticky="we", **pad)
-            ttk.Entry(cf, textvariable=self.v["countries"], width=30).pack(side="left", fill="x", expand=True)
-            ttk.Button(cf, text="Pick…", command=self.pick_countries).pack(side="left", padx=4)
-            ttk.Label(top, text="API token").grid(row=r, column=2, sticky="e", **pad)
-            ttk.Entry(top, textvariable=self.v["token"], show="•", width=30).grid(row=r, column=3, sticky="w", **pad)
-            ttk.Label(top, text="m3u-editor: profile menu > API Tokens (View permission)",
-                      foreground="gray").grid(row=r, column=4, columnspan=2, sticky="w", **pad)
-            r = 2
-            ttk.Label(top, text="e.g. USA:10001, CAN, GBR  (code:postal; your postal code decides local stations)",
-                      foreground="gray").grid(row=r, column=1, columnspan=3, sticky="w", **pad)
+            cf.grid(row=0, column=3, sticky="we", **pad)
+            ttk.Button(cf, text="Pick…", command=self.pick_countries).pack(side="right", padx=(4, 0))
+            e_ctry = ttk.Entry(cf, textvariable=self.v["countries"], width=24)
+            e_ctry.pack(side="left", fill="x", expand=True)
+            Tip(e_ctry, "3-letter country codes with a postal code, e.g. USA:10001, CAN, GBR:SW1A. "
+                        "Your postal code decides which local stations count.")
+            ttk.Label(top, text="m3u-editor playlist URL").grid(row=1, column=0, sticky="e", **pad)
+            e_pl = ttk.Entry(top, textvariable=self.v["playlist"], width=52)
+            e_pl.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
+            Tip(e_pl, "The playlist URL you gave Channels DVR, e.g. "
+                      "http://192.168.1.10:36400/<playlist id>/playlist.m3u. Use the playlist that "
+                      "imports from your provider.")
+            ttk.Label(top, text="API token").grid(row=2, column=0, sticky="e", **pad)
+            tf = ttk.Frame(top)
+            tf.grid(row=2, column=1, sticky="we", **pad)
+            self.token_entry = ttk.Entry(tf, textvariable=self.v["token"], show="•", width=22)
+            self.show_token = tk.BooleanVar(value=False)
+            ttk.Checkbutton(tf, text="Show", variable=self.show_token,
+                            command=lambda: self.token_entry.configure(show="" if self.show_token.get() else "•")
+                            ).pack(side="right", padx=(4, 0))
+            self.token_entry.pack(side="left", fill="x", expand=True)
             ttk.Checkbutton(top, text="Include channels that already have an ID (to check or fix them)",
-                            variable=self.include_existing).grid(row=3, column=1, columnspan=3, sticky="w", **pad)
+                            variable=self.include_existing).grid(row=2, column=2, columnspan=2, sticky="w", **pad)
+            ttk.Label(top, text="m3u-editor: profile menu > API Tokens (View permission)",
+                      foreground="gray").grid(row=3, column=1, sticky="w", **pad)
+            ttk.Label(top, text="e.g. USA:10001, CAN, GBR (code:postal; your postal code decides local stations)",
+                      foreground="gray").grid(row=3, column=2, columnspan=2, sticky="w", **pad)
             btns = ttk.Frame(top)
-            btns.grid(row=0, column=6, rowspan=4, padx=10)
-            self.run_btn = ttk.Button(btns, text="Connect && Match", command=lambda: self.start(False))
+            btns.grid(row=0, column=4, rowspan=4, sticky="ne", padx=(10, 0))
+            self.run_btn = ttk.Button(btns, text="Connect & Match", default="active",
+                                      command=lambda: self.start(False))
             self.run_btn.pack(fill="x", pady=2)
             self.rebuild_btn = ttk.Button(btns, text="Rebuild lineup index", command=lambda: self.start(True))
             self.rebuild_btn.pack(fill="x", pady=2)
-            self.cancel_btn = ttk.Button(btns, text="Cancel (Esc)", command=self.cancel, state="disabled")
-            self.cancel_btn.pack(fill="x", pady=2)
-            ttk.Button(btns, text="Export m3u-editor plugin…", command=self.export_plugin).pack(fill="x", pady=2)
+            Tip(self.rebuild_btn, f"Read the Gracenote lineups again instead of using the copy cached for "
+                                  f"{CACHE_DAYS} days, then match.")
+            b = ttk.Button(btns, text="Export m3u-editor plugin…", command=self.export_plugin)
+            b.pack(fill="x", pady=2)
+            Tip(b, "Save the Gracenote Station IDs plugin. Install it in m3u-editor once; its "
+                   "Apply Station IDs action writes the IDs this app copies.")
+            top.columnconfigure(1, weight=1)
+            top.columnconfigure(3, weight=1)
+            for e in (e_cdvr, e_ctry, e_pl, self.token_entry):
+                e.bind("<Return>", lambda ev: self.start(False))
 
-            mid = ttk.Frame(self.root)
-            mid.pack(fill="both", expand=True, padx=8)
-            bar = ttk.Frame(mid)
-            bar.pack(fill="x")
+            self.conn_bar = ttk.Frame(self.top_holder)
+            self.reload_btn = ttk.Button(self.conn_bar, text="Reload", command=lambda: self.start(False))
+            self.reload_btn.pack(side="right")
+            Tip(self.reload_btn, "Read the playlist again and re-match (Connect & Match). "
+                                 "Your picks are kept.")
+            ttk.Button(self.conn_bar, text="Connection…", command=self.show_conn).pack(side="right", padx=4)
+            b = ttk.Button(self.conn_bar, text="Export plugin…", command=self.export_plugin)
+            b.pack(side="right")
+            Tip(b, "Save the Gracenote Station IDs plugin for m3u-editor (install it once).")
+            self.conn_lbl = ttk.Label(self.conn_bar, text="", width=1)
+            self.conn_lbl.pack(side="left", fill="x", expand=True)
+            self.conn.pack(fill="x")
+
+            # filters
+            bar = ttk.Frame(self.root)
+            bar.pack(side="top", fill="x", padx=10, pady=(4, 2))
             ttk.Label(bar, text="Show").pack(side="left")
-            self.filter = tk.StringVar(value="All")
-            fbox = ttk.Combobox(bar, textvariable=self.filter, state="readonly", width=26,
-                                values=["All", "Needs attention", MATCHED, REVIEW, UNMATCHED,
-                                        NOT_IN_LINEUP, VERIFIED, CHANGE, REMOVE, ERROR, DELETED,
-                                        "Ticked to write"])
-            fbox.pack(side="left", padx=4)
-            ttk.Label(bar, text="Group").pack(side="left", padx=(10, 0))
+            self.show_v = tk.StringVar()
+            self.show_box = ttk.Combobox(bar, textvariable=self.show_v, state="readonly", width=28,
+                                         values=[label for _, label in FILTERS])
+            self.show_box.current(0)
+            self.show_box.pack(side="left", padx=(4, 12))
+            self.show_box.bind("<<ComboboxSelected>>", lambda e: self.set_filter(self.show_box.current()))
+            ttk.Label(bar, text="Group").pack(side="left")
             self.group_filter = tk.StringVar(value="All groups")
             self.group_box = ttk.Combobox(bar, textvariable=self.group_filter, state="readonly", width=24,
                                           values=["All groups"])
-            self.group_box.pack(side="left", padx=4)
-            self.group_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-            ttk.Label(bar, text="Find").pack(side="left", padx=(10, 0))
+            self.group_box.pack(side="left", padx=(4, 12))
+            self.group_box.bind("<<ComboboxSelected>>", lambda e: self.rebuild())
+            ttk.Label(bar, text="Find").pack(side="left")
             self.name_filter = tk.StringVar()
-            fe = ttk.Entry(bar, textvariable=self.name_filter, width=22)
-            fe.pack(side="left", padx=4)
-            self.name_filter.trace_add("write", lambda *a: self.refresh())
-            ttk.Button(bar, text="Clear", width=6, command=self.clear_filters).pack(side="left")
-            self.groups = {}
-            fbox.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-            self.counts = ttk.Label(bar, text="")
-            self.counts.pack(side="left", padx=12)
-            ttk.Label(bar, text="Find: name, ID, # or range like 500-600.  Click a heading to sort.",
-                      foreground="gray").pack(side="right")
+            self.find_entry = ttk.Entry(bar, textvariable=self.name_filter, width=22)
+            self.find_entry.pack(side="left", padx=(4, 0))
+            Tip(self.find_entry, "Channel name, station ID, group or Gracenote name. A number finds "
+                                 "that channel number; 500-600 finds a range. Click a heading to sort.")
+            self.name_filter.trace_add("write", lambda *a: self.schedule_find())
+            self.find_entry.bind("<Escape>", lambda e: (self.name_filter.set(""), "break")[1])
+            self.find_entry.bind("<Down>", lambda e: (self.focus_table(), "break")[1])
+            self.find_entry.bind("<Return>", lambda e: (self.focus_table(), "break")[1])
+            ttk.Button(bar, text="✕", width=2, command=self.clear_filters).pack(side="left", padx=(2, 0))
+            self.shown_lbl = ttk.Label(bar, text="", foreground="gray")
+            self.shown_lbl.pack(side="left", padx=12)
 
-            cols = ("write", "num", "channel", "group", "current", "status", "new", "gname", "call", "why")
-            heads = ("Write", "Ch #", "m3u-editor channel", "Group", "Current ID", "Status",
-                     "Station ID", "Gracenote name", "Call sign", "Reason")
-            widths = (50, 60, 250, 140, 80, 150, 80, 210, 90, 200)
-            self.sort_col, self.sort_rev = "num", False
-            tf = ttk.Frame(mid)
-            tf.pack(fill="both", expand=True, pady=4)
-            self.tree = ttk.Treeview(tf, columns=cols, show="headings", selectmode="browse")
-            for c, h, w in zip(cols, heads, widths):
-                self.tree.heading(c, text=h, command=lambda c=c: self.sort_by(c))
-                self.tree.column(c, width=w, anchor="w", stretch=c in ("channel", "gname", "why"))
-            sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
-            self.tree.configure(yscrollcommand=sb.set)
-            self.tree.pack(side="left", fill="both", expand=True)
-            sb.pack(side="right", fill="y")
-            for tag, color in ((MATCHED, "#d9f2d9"), (REVIEW, "#fff2c2"), (UNMATCHED, "#f8d4d4"),
-                               (NOT_IN_LINEUP, "#f8d4d4"), (VERIFIED, "#e8e8e8"), (ERROR, "#f4b6b6"),
-                               (DELETED, "#cccccc"), (CHANGE, "#ffd8a8"), (REMOVE, "#e0c8f0")):
+            # bottom: status line, then the action buttons above it (packed before the panes so a
+            # small window shrinks the table, never the buttons)
+            sbar = ttk.Frame(self.root)
+            sbar.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
+            self.busy_box = ttk.Frame(sbar)
+            self.busy_box.pack(side="right")
+            self.prog = ttk.Progressbar(self.busy_box, length=180, maximum=100)
+            self.prog.pack(side="left", padx=(8, 4))
+            self.cancel_btn = ttk.Button(self.busy_box, text="Cancel (Esc)", command=self.cancel)
+            self.cancel_btn.pack(side="left")
+            self.status = ttk.Label(sbar, text="", anchor="w", width=1)
+            self.status.pack(side="left", fill="x", expand=True)
+            self.busy_box.pack_forget()
+            actions = ttk.Frame(self.root)
+            actions.pack(side="bottom", fill="x", padx=10, pady=(2, 4))
+            self.copy_btn = ttk.Button(actions, text="Copy 0 IDs for m3u-editor…", command=self.write)
+            self.copy_btn.pack(side="right")
+            Tip(self.copy_btn, "Copy every ticked station ID for the plugin's Apply Station IDs action and "
+                               "show the steps. Nothing changes in m3u-editor until you paste them there. "
+                               f"Shortcut: {KEY}S")
+            self.verify_btn = ttk.Button(actions, text="Verify in m3u-editor", command=self.verify)
+            self.verify_btn.pack(side="right", padx=6)
+            Tip(self.verify_btn, "After Apply Station IDs has run in m3u-editor: read the playlist again "
+                                 "and check that every copied ID is there.")
+            for text, fn, tip in (
+                    ("Tick selected", lambda: self.tick_selected(True),
+                     "Include the selected channels in the next copy. Select several with Shift-click "
+                     f"or {KEY}-click ({KEY}A selects every channel shown)."),
+                    ("Untick selected", lambda: self.tick_selected(False),
+                     "Leave the selected channels out of the next copy without losing their picks."),
+                    ("Mark reviewed", lambda: self.mark_reviewed(),
+                     "Keep the selected channels as they are and take them out of Needs attention."),
+                    ("Match unmatched one by one…", self.walkthrough,
+                     "Step through the channels that still need a station, one at a time.")):
+                b = ttk.Button(actions, text=text, command=fn)
+                b.pack(side="left", padx=(0, 6))
+                Tip(b, tip)
+            self.action_buttons = list(actions.winfo_children())
+
+            # table above, channel detail below; drag the divider to resize
+            self.vpane = tk.PanedWindow(self.root, orient="vertical", sashwidth=8, sashrelief="raised",
+                                        bd=0, opaqueresize=True)
+            self.vpane.pack(side="top", fill="both", expand=True, padx=10, pady=4)
+            tbox, self.tree = scrolled_tree(self.vpane, COLS, HEADS, WIDTHS, "why", selectmode="extended")
+            for c in COLS:
+                self.tree.heading(c, command=lambda c=c: self.sort_by(c))
+            self.tree.column("write", anchor="center")
+            self.tree.heading("write", anchor="center")
+            for tag, color in ROW_COLORS.items():
                 self.tree.tag_configure(tag, background=color, foreground="black")
-            self.tree.bind("<<TreeviewSelect>>", self._selected)
-            self.tree.bind("<Double-1>", lambda e: self.toggle())
-            self.tree.bind("<space>", lambda e: self.toggle())
+            self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_detail())
+            self.tree.bind("<Button-1>", self.table_click)
+            self.tree.bind("<Double-1>", self.table_double)
+            self.tree.bind("<space>", lambda e: (self.toggle(), "break")[1])
+            self.tree.bind("<Return>", lambda e: (self.done_next(), "break")[1])
+            self.tree.bind("<KP_Enter>", lambda e: (self.done_next(), "break")[1])
+            self.tree.bind(f"<{MOD}-a>", lambda e: (self.select_all(), "break")[1])
+            for k in range(1, 10):
+                self.tree.bind(str(k), lambda e, k=k: (self.pick_number(k), "break")[1])
+            allow_toggle_click(self.tree)
+            bind_right_click(self.tree, self.table_menu)
+            self.vpane.add(tbox, minsize=140, stretch="always")
+            self.update_headings()
 
-            pick = ttk.LabelFrame(self.root, text="Fix the selected channel")
-            pick.pack(fill="x", padx=8, pady=4)
-            self.sel_label = ttk.Label(pick, text="Select a row above.")
-            self.sel_label.grid(row=0, column=0, columnspan=4, sticky="w", padx=4)
-            self.cand = tk.Listbox(pick, height=6, width=100, exportselection=False)
-            self.cand.grid(row=1, column=0, rowspan=3, sticky="we", padx=4, pady=3)
-            self.cand.bind("<Double-1>", lambda e: self.use_candidate())
-            pick.columnconfigure(0, weight=1)
-            ttk.Button(pick, text="Use selected", command=self.use_candidate).grid(row=1, column=1, sticky="we", padx=4)
+            detail = ttk.Frame(self.vpane, padding=(0, 6, 0, 0))
+            self.vpane.add(detail, minsize=240, stretch="never", height=340)
+            head = ttk.Frame(detail)
+            head.pack(side="top", fill="x")
+            self.d_title = ttk.Label(head, text="Select a channel above.", font=bold)
+            self.d_title.pack(side="top", anchor="w")
+            self.d_sub = ttk.Label(head, text="", foreground="gray", justify="left")
+            self.d_sub.pack(side="top", anchor="w", fill="x")
+            head.bind("<Configure>", lambda e: self.d_sub.configure(wraplength=max(200, e.width - 10)))
+
+            # one station list for the selected channel: the matcher's suggestions, or the results of
+            # the search box above it while there is text in it
+            self.list_box = ttk.LabelFrame(detail, text="Suggestions", padding=4)
+            self.list_box.pack(side="top", fill="both", expand=True, pady=(4, 0))
+            srow = ttk.Frame(self.list_box)
+            srow.pack(side="top", fill="x", pady=(0, 4))
+            ttk.Label(srow, text="Search").pack(side="left", padx=(0, 4))
+            self.wide_v = tk.BooleanVar(value=False)
+            cb = ttk.Checkbutton(srow, text="All of Gracenote", variable=self.wide_v)
+            cb.pack(side="right")
+            Tip(cb, "Also search stations outside your lineups. Without this, Gracenote-wide results are "
+                    "added only when nothing in your lineups is a good match.")
+            ttk.Button(srow, text="✕", width=2, command=lambda: self.search_v.set("")).pack(side="right",
+                                                                                          padx=(2, 8))
             self.search_v = tk.StringVar()
-            se = ttk.Entry(pick, textvariable=self.search_v, width=28)
-            se.grid(row=2, column=1, padx=4)
-            se.bind("<Return>", lambda e: self.search())
-            self.main_live, _ = self._live(self.search_v, lambda c, t, w: self._show_cands(c, outside=True))
-            se.bind("<Down>", lambda e: (self.cand.focus_set(), self.cand.selection_clear(0, "end"),
-                                         self.cand.selection_set(0), self.cand.activate(0), "break")[-1])
-            ttk.Button(pick, text="Search", command=self.search).grid(row=2, column=2, padx=4)
+            self.search_entry = ttk.Entry(srow, textvariable=self.search_v)
+            self.search_entry.pack(side="left", fill="x", expand=True)
+            Tip(self.search_entry, "Type to search Gracenote; the list below shows the results. Esc or ✕ "
+                                   f"brings back the suggestions. Shortcut: {KEY}L")
+            self.wide_v.trace_add("write", lambda *a: self.search_v.get().strip() and self.live.schedule(0))
+            self.search_entry.bind("<Down>", lambda e: (self.focus_list(), "break")[1])
+            self.search_entry.bind("<Return>", lambda e: (self.live.schedule(0), self.focus_list(), "break")[2])
+            self.search_entry.bind("<KP_Enter>", lambda e: (self.live.schedule(0), self.focus_list(), "break")[2])
+            self.search_entry.bind("<Escape>", lambda e: (self.search_v.set(""), "break")[1])
+            lb = ttk.Frame(self.list_box)
+            lb.pack(side="bottom", fill="x", pady=(4, 0))
+            self.done_btn = ttk.Button(lb, text="Done, next  ⏎", command=self.done_next)
+            self.done_btn.pack(side="right")
+            Tip(self.done_btn, "Keep this channel as shown and go to the next one (Return). "
+                               "Without a pick it becomes Left as is.")
+            self.d_buttons = [self.done_btn]
+            for text, fn, tip in (
+                    ("Clear choice", lambda: self.clear_choice(),
+                     "No new station ID for this channel (a current ID is kept)."),
+                    ("Remove ID", lambda: self.remove_id(),
+                     "Clear the station ID this channel has in m3u-editor."),
+                    ("Reset", lambda: self.reset_rows(),
+                     "Go back to what the matcher found for this channel.")):
+                b = ttk.Button(lb, text=text, command=fn)
+                b.pack(side="left", padx=(0, 6))
+                Tip(b, tip)
+                self.d_buttons.append(b)
+            ttk.Label(lb, text="Or a station ID").pack(side="left", padx=(12, 0))
             self.manual_v = tk.StringVar()
-            ttk.Entry(pick, textvariable=self.manual_v, width=28).grid(row=3, column=1, padx=4)
-            ttk.Button(pick, text="Set ID manually", command=self.set_manual).grid(row=3, column=2, padx=4)
-            ttk.Button(pick, text="Clear choice", command=self.clear_choice).grid(row=1, column=2, padx=4)
-            ttk.Button(pick, text="Remove ID", command=self.remove_id).grid(row=1, column=3, padx=4)
+            e_man = ttk.Entry(lb, textvariable=self.manual_v, width=10)
+            e_man.pack(side="left", padx=4)
+            e_man.bind("<Return>", lambda e: (self.set_manual(), "break")[1])
+            self.use_id_btn = ttk.Button(lb, text="Use ID", command=self.set_manual)
+            self.use_id_btn.pack(side="left")
+            Tip(self.use_id_btn, "Use a Gracenote station ID you already know.")
+            self.d_buttons.append(self.use_id_btn)
+            self.list_info = ttk.Label(self.list_box, text="", foreground="gray", width=1)
+            self.list_info.pack(side="bottom", fill="x", pady=(4, 0))
+            cbox, self.cand = scrolled_tree(self.list_box, ("n", "mark") + STATION_COLS, ("#", "") + STATION_HEADS,
+                                            (30, 30) + STATION_WIDTHS, "id", selectmode="browse", height=6)
+            cbox.pack(side="top", fill="both", expand=True)
+            self.cand.column("n", anchor="center")
+            self.cand.column("mark", anchor="center")
+            for tag, bg, fg in (("on", "#d6f0d6", "black"), ("cur", "#e3eaf6", "black"),
+                                ("outside", "", "#a04000")):
+                self.cand.tag_configure(tag, background=bg, foreground=fg)
+            self.cand.bind("<Button-1>", self.cand_click)
+            self.cand.bind("<space>", lambda e: (self.use_cand(self.cand.focus()), "break")[1])
+            self.cand.bind("<Return>", lambda e: (self.done_next(), "break")[1])
+            self.cand.bind("<KP_Enter>", lambda e: (self.done_next(), "break")[1])
+            for k in range(1, 10):
+                self.cand.bind(str(k), lambda e, k=k: (self.pick_number(k), "break")[1])
+            self.list_mode, self.results, self.results_text, self.results_note = "suggest", [], "", ""
+            self.live = LiveSearch(self, self.search_v, self.show_results, wide=self.wide_v.get)
+            self.set_detail_enabled(False)
 
-            bottom = ttk.Frame(self.root)
-            bottom.pack(fill="x", padx=8, pady=6)
-            self.status = ttk.Label(bottom, text="Fill in your servers and press Connect & Match.")
-            self.status.pack(side="left")
-            self.verify_btn = ttk.Button(bottom, text="Verify in m3u-editor", command=self.verify)
-            self.verify_btn.pack(side="right", padx=4)
-            self.write_btn = ttk.Button(bottom, text="Copy ticked IDs for m3u-editor", command=self.write)
-            self.write_btn.pack(side="right", padx=4)
-            ttk.Button(bottom, text="Export unmatched CSV", command=self.export).pack(side="right", padx=4)
-            ttk.Button(bottom, text="Open log", command=self.open_log).pack(side="right", padx=4)
-            ttk.Button(bottom, text="Match unmatched one by one…",
-                       command=self.walkthrough).pack(side="right", padx=4)
-            self.prog = ttk.Progressbar(bottom, length=220, maximum=100)
-            self.prog.pack(side="right", padx=10)
+            # keyboard shortcuts that work anywhere in the window
+            self.root.bind("<Escape>", lambda e: self.cancel())
+            self.root.bind(f"<{MOD}-s>", lambda e: (self.write(), "break")[1])
+            self.root.bind(f"<{MOD}-r>", lambda e: (self.start(False), "break")[1])
+            self.root.bind(f"<{MOD}-f>", lambda e: (self.find_entry_focus(), "break")[1])
+            self.root.bind(f"<{MOD}-l>", lambda e: (self.search_focus(), "break")[1])
+            self.root.bind(f"<{MOD}-Return>", lambda e: (self.done_next(), "break")[1])
+            self.root.after(80, self.place_sashes)
+
+        def build_menu(self):
+            mb = tk.Menu(self.root)
+            fm = tk.Menu(mb, tearoff=0)
+            fm.add_command(label="Connect & Match / Reload", accelerator=f"{KEY}R",
+                           command=lambda: self.start(False))
+            fm.add_command(label="Rebuild lineup index and match", command=lambda: self.start(True))
+            fm.add_command(label="Connection settings…", command=self.show_conn)
+            fm.add_separator()
+            fm.add_command(label="Copy ticked IDs for m3u-editor…", accelerator=f"{KEY}S", command=self.write)
+            fm.add_command(label="Verify in m3u-editor", command=self.verify)
+            fm.add_command(label="Export m3u-editor plugin…", command=self.export_plugin)
+            fm.add_separator()
+            fm.add_command(label="Export unmatched CSV…", command=self.export)
+            fm.add_command(label="Open log", command=self.open_log)
+            fm.add_command(label="Open data folder", command=lambda: self.open_path(CONFIG_DIR))
+            if not aqua:
+                fm.add_separator()
+                fm.add_command(label="Quit", command=self.on_close)
+            mb.add_cascade(label="File", menu=fm)
+            cm = tk.Menu(mb, tearoff=0)
+            self.fill_channel_menu(cm)
+            cm.add_separator()
+            cm.add_command(label="Match unmatched one by one…", command=self.walkthrough)
+            cm.add_command(label="Mark every channel shown as reviewed",
+                           command=lambda: self.mark_reviewed(all_shown=True))
+            cm.add_separator()
+            cm.add_command(label="Select all shown", accelerator=f"{KEY}A", command=self.select_all)
+            cm.add_command(label="Find a channel", accelerator=f"{KEY}F", command=self.find_entry_focus)
+            cm.add_command(label="Search Gracenote", accelerator=f"{KEY}L", command=self.search_focus)
+            mb.add_cascade(label="Channels", menu=cm)
+            hm = tk.Menu(mb, tearoff=0)
+            hm.add_command(label="How it works", command=lambda: messagebox.showinfo(
+                "How it works", HELP.format(key=KEY.rstrip("+")), parent=self.root))
+            hm.add_command(label="Keyboard shortcuts", command=self.show_keys)
+            hm.add_command(label="Open log", command=self.open_log)
+            mb.add_cascade(label="Help", menu=hm)
+            self.root.configure(menu=mb)
+
+        def fill_channel_menu(self, m):
+            m.add_command(label="Done, next", accelerator="Return", command=self.done_next)
+            m.add_command(label="Tick selected", command=lambda: self.tick_selected(True))
+            m.add_command(label="Untick selected", command=lambda: self.tick_selected(False))
+            m.add_command(label="Tick / untick", accelerator="Space", command=self.toggle)
+            m.add_command(label="Mark reviewed", command=lambda: self.mark_reviewed())
+            m.add_separator()
+            m.add_command(label="Clear choice", command=lambda: self.clear_choice())
+            m.add_command(label="Remove ID…", command=lambda: self.remove_id())
+            m.add_command(label="Reset to the matcher's result", command=lambda: self.reset_rows())
+
+        def show_keys(self):
+            messagebox.showinfo("Keyboard shortcuts", "\n".join((
+                "Channel table",
+                "   Up / Down: next or previous channel",
+                "   Return: done with this channel, go to the next",
+                "   1-9: use that station and go to the next",
+                "   Space: tick or untick the selected channels",
+                f"   {KEY}A: select every channel shown",
+                "   Shift-click / " + ("⌘" if aqua else "Ctrl-") + "click: select several",
+                "",
+                "Station list (suggestions or search results)",
+                "   Click: use that station (click it again to clear)",
+                "   1-9: use that station and go to the next",
+                "   Space: use the selected station",
+                "   Return: done, next",
+                "",
+                "Search box",
+                f"   {KEY}L: jump to the search box",
+                "   Typing: the list shows the results",
+                "   Return or Down: search now and move into the list",
+                "   Esc: clear it and show the suggestions again",
+                "",
+                "Anywhere",
+                f"   {KEY}F: find a channel      {KEY}R: reload",
+                f"   {KEY}S: copy for m3u-editor   {KEY}Return: done, next",
+                "   Esc: cancel the running job")), parent=self.root)
+
+        def show_conn(self):
+            self.conn_bar.pack_forget()
+            self.conn.pack(fill="x")
+
+        def hide_conn(self):
+            self.conn.pack_forget()
+            self.conn_bar.pack(fill="x")
+
+        def find_entry_focus(self):
+            self.find_entry.focus_set()
+            self.find_entry.select_range(0, "end")
+
+        def search_focus(self):
+            self.search_entry.focus_set()
+            self.search_entry.select_range(0, "end")
+
+        def focus_table(self):
+            kids = self.tree.get_children()
+            if kids and not self.tree.selection():
+                self.tree.selection_set(kids[0])
+                self.tree.focus(kids[0])
+            self.tree.focus_set()
+
+        def select_all(self):
+            self.tree.selection_set(self.tree.get_children())
+            self.tree.focus_set()
+
+        def note(self, text, warn=False):
+            """Status line; warnings are red and ring the bell so a no-op is never silent."""
+            self.status.config(text=text, foreground="#c00000" if warn else "")
+            if warn:
+                self.root.bell()
 
         # ------------------------------------------------------------ settings
         def pick_countries(self):
@@ -1298,7 +1838,9 @@ def run_gui():
             win.title("Pick countries")
             win.transient(self.root)
             ttk.Label(win, text="Select every country your IPTV channels come from "
-                                "(Ctrl/Cmd-click for several).").pack(anchor="w", padx=10, pady=(10, 4))
+                                f"({KEY.rstrip('+')}-click for several).").pack(anchor="w", padx=10, pady=(10, 4))
+            row = ttk.Frame(win)
+            row.pack(side="bottom", fill="x", padx=10, pady=8)
             lb = tk.Listbox(win, selectmode="extended", height=20, width=40, exportselection=False)
             lb.pack(fill="both", expand=True, padx=10)
             for i, (n, c, _) in enumerate(COUNTRIES):
@@ -1313,49 +1855,65 @@ def run_gui():
                 picked += [(c, current[c]) for c in extra]
                 self.v["countries"].set(format_countries(picked))
                 win.destroy()
-            row = ttk.Frame(win)
-            row.pack(fill="x", padx=10, pady=8)
             ttk.Label(row, text="Edit postal codes in the main window afterwards (CODE:postal).",
                       foreground="gray").pack(side="left")
-            ttk.Button(row, text="OK", command=ok).pack(side="right")
+            ttk.Button(row, text="OK", default="active", command=ok).pack(side="right")
             ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+            lb.bind("<Double-1>", lambda e: ok())
+            win.bind("<Escape>", lambda e: win.destroy())
             win.grab_set()
 
         def _load_settings(self):
-            s = {}
-            try:
-                with open(SETTINGS_FILE, encoding="utf-8") as f:
-                    s = json.load(f)
-            except (OSError, ValueError):
-                pass
+            s = read_json(SETTINGS_FILE)
             for k in ("cdvr", "playlist", "countries", "token"):
                 if s.get(k):
-                    self.v[k].set(s[k])
+                    self.v[k].set(str(s[k]))
+            if "include_existing" in s:
+                self.include_existing.set(bool(s["include_existing"]))
             if not self.v["countries"].get():
-                old = re.search(r"\(([A-Z]{3})\)$", s.get("country") or "")  # older settings format
+                old = re.search(r"\(([A-Z]{3})\)$", str(s.get("country") or ""))  # older settings format
                 code = old.group(1) if old else "USA"
                 self.v["countries"].set(f"{code}:{s.get('postal') or COUNTRY_POSTAL.get(code, '10001')}")
 
-        def _save_settings(self):
+        def _save_settings(self, **extra):
             # The API token is saved too, so it doesn't have to be pasted every time. The file
             # is readable only by your user account; delete it to forget the API token.
-            data = {k: self.v[k].get() for k in ("cdvr", "playlist", "countries", "token")}
+            data = read_json(SETTINGS_FILE)
+            data.update({k: self.v[k].get() for k in ("cdvr", "playlist", "countries", "token")})
+            data["include_existing"] = bool(self.include_existing.get())
+            data.update(extra)
             try:
                 os.makedirs(CONFIG_DIR, exist_ok=True)
                 write_private_json(SETTINGS_FILE, data)
             except OSError as e:
                 log.warning("Could not save settings: %s", e)
 
+        def _can_autoconnect(self):
+            """Connect at startup only when every saved setting is complete and valid."""
+            v = {k: var.get().strip() for k, var in self.v.items()}
+            if not all(v.values()):
+                return False
+            try:
+                validate_address(v["cdvr"], "Channels DVR", 8089)
+                parse_playlist_url(v["playlist"])
+                pairs = parse_countries(v["countries"])
+            except ValueError:
+                return False
+            return all(c in COUNTRY_NAMES for c, _ in pairs)
+
         # ------------------------------------------------------------ session autosave
         def _session_data(self):
             picks = {}
             for r in self.rows:
-                if r["why"] in USER_PICK or r.get("remove") or r["status"] in (ERROR, DELETED) or not r["write"]:
+                if r["why"] in USER_PICK or r.get("remove") or r["status"] in (ERROR, DELETED) \
+                        or not r["write"] or r.get("reviewed"):
                     picks[str(r["channel"]["id"])] = {
                         "name": r["channel"].get("effective_name") or r["channel"].get("name"),
                         "new_id": r["new_id"], "write": r["write"], "why": r["why"],
-                        "status": r["status"], "best": r["best"], "remove": bool(r.get("remove"))}
-            return {"saved": time.time(), "source": self.source, "picks": picks}
+                        "status": r["status"], "best": r["best"], "remove": bool(r.get("remove")),
+                        "reviewed": bool(r.get("reviewed"))}
+            return {"saved": time.time(), "source": self.source, "picks": picks,
+                    "copied": [r["channel"]["id"] for r in self.copied]}
 
         def save_session(self, now=False):
             """Autosave picks shortly after every change (debounced)."""
@@ -1366,52 +1924,68 @@ def run_gui():
                     self.root.after_cancel(self._save_after)
                 self._save_after = self.root.after(800, lambda: self.save_session(True))
                 return
+            if self._save_after:
+                self.root.after_cancel(self._save_after)
             self._save_after = None
             try:
                 os.makedirs(CONFIG_DIR, exist_ok=True)
                 with open(SESSION_FILE + ".tmp", "w", encoding="utf-8") as f:
                     json.dump(self._session_data(), f)
                 os.replace(SESSION_FILE + ".tmp", SESSION_FILE)
-            except OSError as e:
+            except (OSError, TypeError, ValueError) as e:
                 log.warning("Could not autosave picks: %s", e)
 
-        def _restore_session(self):
-            """Offer to re-apply hand picks saved from an earlier run against the same playlist."""
-            try:
-                with open(SESSION_FILE, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                return
-            if data.get("source") != self.source:
-                return
-            picks = data.get("picks") or {}
+        def _restore_session(self, ask):
+            """Re-apply work saved from an earlier run against the same playlist: hand picks,
+            removals, unticked matches and reviews. Asks first after a fresh start."""
+            data = read_json(SESSION_FILE)
+            picks = data.get("picks")
+            if data.get("source") != self.source or not isinstance(picks, dict):
+                return 0
             todo = []
             for r in self.rows:
                 pk = picks.get(str(r["channel"]["id"]))
-                if pk and pk.get("why") in USER_PICK and pk.get("new_id") and pk["new_id"] != r["current"]:
-                    todo.append((r, pk))
-                elif pk and pk.get("remove") and pk.get("write") and r["current"]:
-                    todo.append((r, pk))
-            if not todo:
-                return
-            age = time.strftime("%b %d %H:%M", time.localtime(data.get("saved", 0)))
-            if not messagebox.askyesno(
-                    "Restore your picks?",
-                    f"Found {len(todo)} station IDs you picked by hand on {age} that are not in "
-                    "m3u-editor yet.\n\nRestore them?"):
-                return
-            for r, pk in todo:
-                if pk.get("remove"):
-                    self._set_remove(r)
+                if not isinstance(pk, dict):
                     continue
-                r.update(new_id=pk["new_id"], write=pk.get("write", True), why=pk["why"],
-                         status=MATCHED, best=pk.get("best") or (self.matcher.by_id.get(pk["new_id"])))
-                self._mark_change(r)
-            log.info("Restored %d hand picks from the saved session", len(todo))
-            self.refresh()
+                kind = None
+                if pk.get("why") in USER_PICK and pk.get("new_id") and pk["new_id"] != r["current"]:
+                    kind = "pick"
+                elif pk.get("remove") and pk.get("write") and r["current"]:
+                    kind = "remove"
+                elif pk.get("write") is False and r["write"] and pk.get("new_id") == r["new_id"]:
+                    kind = "untick"
+                if kind or (pk.get("reviewed") and not r.get("reviewed")):
+                    todo.append((r, pk, kind))
+            if not todo:
+                return 0
+            if ask:
+                age = time.strftime("%b %d %H:%M", time.localtime(data.get("saved") or 0))
+                if not messagebox.askyesno(
+                        "Restore your picks?",
+                        f"Found work from {age} on {len(todo)} channels that is not in m3u-editor yet "
+                        "(station IDs you picked, removals, unticked matches and reviews).\n\n"
+                        "Restore it?", parent=self.root):
+                    return 0
+            for r, pk, kind in todo:
+                if kind == "remove":
+                    self._set_remove(r)
+                elif kind == "pick":
+                    best = pk.get("best") if isinstance(pk.get("best"), dict) else None
+                    r.update(new_id=str(pk["new_id"]), write=bool(pk.get("write", True)), why=pk["why"],
+                             status=MATCHED, best=best or self.matcher.by_id.get(pk["new_id"]))
+                    self._mark_change(r)
+                elif kind == "untick":
+                    r["write"] = False
+                if pk.get("reviewed"):
+                    r["reviewed"] = True
+            ids = data.get("copied")
+            if isinstance(ids, list):
+                ids = set(ids)
+                self.copied = [r for r in self.rows if r["channel"]["id"] in ids and to_apply(r)]
+            log.info("Restored saved work on %d channels", len(todo))
+            return len(todo)
 
-        def open_log(self):
-            path = LOG_FILE if os.path.exists(LOG_FILE) else CONFIG_DIR
+        def open_path(self, path):
             try:
                 if sys.platform == "win32":
                     os.startfile(path)  # noqa: S606 - opens the log in the default viewer
@@ -1420,64 +1994,92 @@ def run_gui():
                 else:
                     subprocess.Popen(["xdg-open", path])
             except OSError as e:
-                messagebox.showinfo("Log file", f"The log is at:\n{LOG_FILE}\n\n({e})")
+                messagebox.showinfo("Open", f"Could not open {path}. The log is at:\n{LOG_FILE}\n\n({e})", parent=self.root)
+
+        def open_log(self):
+            self.open_path(LOG_FILE if os.path.exists(LOG_FILE) else CONFIG_DIR)
 
         def on_close(self):
-            self.save_session(True)
-            log.info("Window closed")
-            self.root.destroy()
+            if self.busy and not messagebox.askyesno(
+                    "Still working", "A job is still running. Quit anyway?", parent=self.root):
+                return
+            try:
+                if self.cancel_evt:
+                    self.cancel_evt.set()
+                self.save_session(True)
+                self.save_ui()
+            finally:
+                log.info("Window closed")
+                self.root.destroy()
 
         # ------------------------------------------------------------ worker plumbing
         def _poll(self):
             try:
                 while True:
                     kind, (jid, payload) = self.q.get_nowait()
+                    if kind == "call":
+                        payload()
+                        continue
                     if jid != self.job_id:
-                        continue  # result of a cancelled job
+                        continue  # result of a canceled job
                     if kind == "progress":
                         text, pct = payload
-                        self.status.config(text=text)
+                        self.status.config(text=text, foreground="")
                         if pct is not None:
                             self.prog["value"] = pct
                     elif kind == "done":
-                        payload()
                         self._set_busy(False)
+                        payload()
                     elif kind == "error":
                         self._set_busy(False)
-                        self.prog["value"] = 0
-                        self.status.config(text="Error: " + payload.splitlines()[0])
-                        messagebox.showerror("Error", payload + f"\n\nDetails are in the log:\n{LOG_FILE}")
+                        first = payload.splitlines()[0] if payload else "unknown error"
+                        if self.job_quiet:
+                            self.show_conn()
+                            self.note(f"Could not connect: {first}  Check the servers and press "
+                                      "Connect & Match.", warn=True)
+                        else:
+                            self.note("Error: " + first, warn=True)
+                            messagebox.showerror("Error", payload + f"\n\nDetails are in the log:\n{LOG_FILE}",
+                                                 parent=self.root)
             except queue.Empty:
                 pass
             except Exception as e:  # never let the poll loop die
                 log.exception("Error in the UI loop")
-                self._set_busy(False)
-                self.status.config(text=f"Error: {e}")
-            self.root.after(100, self._poll)
+                self.note(f"Error: {e}", warn=True)
+            try:
+                self.root.after(60, self._poll)
+            except tk.TclError:
+                pass  # window closed
 
         def _set_busy(self, busy):
             self.busy = busy
-            idle = "disabled" if busy else "normal"
-            for b in (self.run_btn, self.rebuild_btn, self.write_btn, self.verify_btn):
-                b.config(state=idle)
-            self.cancel_btn.config(state="normal" if busy else "disabled")
+            for b in (self.run_btn, self.rebuild_btn, self.reload_btn, self.verify_btn):
+                b.state(["disabled"] if busy else ["!disabled"])
+            if self.apply_alive():
+                self.apply_verify.state(["disabled"] if busy else ["!disabled"])
+            if busy:
+                self.prog["value"] = 0
+                self.busy_box.pack(side="right", before=self.status)
+            else:
+                self.busy_box.pack_forget()
+            self.update_counts()
 
-        def _worker(self, fn, kind):
+        def _worker(self, fn, kind, quiet=False):
             self.job_id += 1
             jid, evt = self.job_id, threading.Event()
-            self.cancel_evt, self.job_kind = evt, kind
+            self.cancel_evt, self.job_kind, self.job_quiet = evt, kind, quiet
 
             def progress(text, pct=None):
                 if evt.is_set():
-                    raise Cancelled()
+                    raise Canceled()
                 self.q.put(("progress", (jid, (text, pct))))
 
             def run():
                 _tls.cancel = evt
                 try:
                     self.q.put(("done", (jid, fn(progress))))
-                except Cancelled:
-                    log.info("%s job cancelled", kind)
+                except Canceled:
+                    log.info("%s job canceled", kind)
                 except Exception as e:  # report every failure in the GUI
                     if isinstance(e, (RuntimeError, ValueError)):
                         log.error("%s job failed: %s", kind, e)
@@ -1494,37 +2096,49 @@ def run_gui():
             if self.cancel_evt:
                 self.cancel_evt.set()
             self.job_id += 1  # ignore anything the old job still reports
-            log.info("User cancelled the %s job", self.job_kind)
+            log.info("User canceled the %s job", self.job_kind)
             self._set_busy(False)
             self.prog["value"] = 0
-            self.status.config(text="Cancelled. Fix the details and press Connect & Match again.")
+            self.note("Canceled." + (" Fix the details and press Connect & Match again."
+                                     if self.job_kind == "match" else ""))
 
-        # ------------------------------------------------------------ actions
-        def start(self, rebuild):
+        def wide_search(self, cdvr, matcher, text):
+            """Gracenote-wide candidates, remembered per text until the next load (any thread)."""
+            key = (id(matcher), text.lower())
+            if key not in self.wide_cache:
+                self.wide_cache[key] = global_candidates(cdvr, text, matcher, limit=25)
+            return self.wide_cache[key]
+
+        # ------------------------------------------------------------ connect and match
+        def start(self, rebuild, startup=False):
             if self.busy:
+                self.note("Still working, one moment…", warn=True)
                 return
             v = {k: var.get().strip() for k, var in self.v.items()}
+
+            def bad(title, msg):
+                self.show_conn()
+                if startup:
+                    self.note(msg, warn=True)
+                else:
+                    messagebox.showwarning(title, msg, parent=self.root)
             try:
                 cdvr = validate_address(v["cdvr"], "Channels DVR", 8089)
                 m3ue = M3uEditor(v["playlist"], v["token"])
             except ValueError as e:
-                messagebox.showwarning("Check the address", str(e))
+                bad("Check the address", str(e))
                 return
             try:
                 pairs = parse_countries(v["countries"])
             except ValueError as e:
-                messagebox.showwarning("Check the countries", str(e))
+                bad("Check the countries", str(e))
                 return
             unknown = [c for c, _ in pairs if c not in COUNTRY_NAMES]
-            if unknown and not messagebox.askyesno(
-                    "Countries not in the list",
-                    f"{', '.join(unknown)} returned no lineups when this tool was tested. Gracenote "
-                    "may have no data there; channels from it will only get labelled suggestions "
-                    "from Gracenote's global search.\n\nTry anyway?"):
-                return
+            if unknown and startup:
+                return   # startup auto-connect only runs with known countries
             if not v["token"]:
-                messagebox.showwarning("Missing info", "Enter an m3u-editor API token (profile menu > API "
-                                                       "Tokens; View permission is enough).")
+                bad("Missing info", "Enter an m3u-editor API token (profile menu > API "
+                                    "Tokens; View permission is enough).")
                 return
             self._save_settings()
             self.save_session(True)
@@ -1553,8 +2167,8 @@ def run_gui():
                 matcher = Matcher(idx)
                 progress("Matching channels...", 97)
                 rows = []
-                for ch in sorted(chans, key=lambda c: c.get("effective_channel_number")
-                                 or c.get("channel_number") or 0):
+                for ch in sorted(chans, key=lambda c: _num_key(c.get("effective_channel_number")
+                                                               or c.get("channel_number") or 0)):
                     current = ch.get("effective_tvc_guide_stationid") or ""
                     if current and not include:
                         continue
@@ -1577,266 +2191,356 @@ def run_gui():
                 for r in rows:
                     counts[r["status"]] = counts.get(r["status"], 0) + 1
                 log.info("Matched %d channels: %s", len(rows), counts)
+                hidden = sum(1 for c in chans if not c["in_output"])
+                return lambda: self.matched(cdvr, m3ue, matcher, rows, chans, idx, pairs, hidden, startup)
 
-                def finish():
-                    self.cdvr, self.m3ue, self.matcher, self.rows = cdvr, m3ue, matcher, rows
-                    self.source, self.copied = f"{m3ue.base}/{m3ue.uuid}", []
-                    for r in rows:
-                        r["group"] = r["channel"].get("group_name") or "(no group)"
-                    names = sorted({r["group"] for r in rows}, key=str.lower)
-                    counts = {n: sum(1 for r in rows if r["group"] == n) for n in names}
-                    self.group_box["values"] = ["All groups"] + [f"{n}  ({counts[n]})" for n in names]
-                    if self.group_filter.get() not in self.group_box["values"]:
-                        self.group_filter.set("All groups")
-                    self.prog["value"] = 100
-                    self.status.config(
-                        text=f"{m3ue.playlist['name']}: {len(chans)} channels, {len(rows)} checked against "
-                             f"{idx['lineups']} lineups / {len(idx['stations'])} stations "
-                             f"in {format_countries(pairs)}.")
-                    self.refresh()
-                    if idx.get("problems"):
-                        messagebox.showwarning("Some countries had problems",
-                                               "\n\n".join(idx["problems"]))
-                    hidden = sum(1 for c in chans if not c["in_output"])
-                    if hidden:
-                        messagebox.showwarning(
-                            "Some current IDs could not be read",
-                            f"{hidden} channels are not in the playlist output (for example they are "
-                            "hidden by a filter), so their current station ID shows as empty. "
-                            "Picking an ID for them still works.")
-                    self._restore_session()
-                return finish
+            self.note("Connecting…")
+            self._worker(job, "match", quiet=startup)
 
-            self._worker(job, "match")
+        def matched(self, cdvr, m3ue, matcher, rows, chans, idx, pairs, hidden, quiet):
+            """Runs on the Tk thread with the result of Connect & Match."""
+            first = not self.loaded_once
+            self.save_session(True)   # picks made while loading are kept
+            self.cdvr, self.m3ue, self.matcher, self.rows = cdvr, m3ue, matcher, rows
+            self.source, self.copied = f"{m3ue.base}/{m3ue.uuid}", []
+            self.wide_cache = {}
+            self.loaded_once = True
+            self.shown_i = None
+            for r in rows:
+                r["group"] = r["channel"].get("group_name") or "(no group)"
+                r["reviewed"] = False
+                r["auto"] = {k: r[k] for k in ("status", "best", "new_id", "write", "why")}
+            names = sorted({r["group"] for r in rows}, key=str.lower)
+            gcount = {n: sum(1 for r in rows if r["group"] == n) for n in names}
+            self.group_box["values"] = ["All groups"] + [f"{n}  ({gcount[n]})" for n in names]
+            if self.group_filter.get() not in self.group_box["values"]:
+                self.group_filter.set("All groups")
+            self.hide_conn()
+            self.conn_lbl.configure(text=f"{m3ue.playlist['name']} on {_host_of(m3ue.base)}   ·   "
+                                         f"{len(rows)} channels   ·   {format_countries(pairs)}   ·   "
+                                         f"loaded {time.strftime('%H:%M')}")
+            notes = []
+            if idx.get("problems"):
+                notes.append("Some countries had problems: " + " ".join(idx["problems"]))
+                log.warning("Country problems: %s", idx["problems"])
+            if hidden:
+                notes.append(f"{hidden} channels are not in the playlist output (hidden by a filter?), so "
+                             "their current ID shows as empty; picking one still works.")
+            restored = self._restore_session(ask=first)
+            att = sum(1 for r in rows if self.in_filter(r, "attention"))
+            if first:
+                self.filter_idx = 1 if att else 0
+            self.rebuild(keep_view=not first)
+            if first or not self.tree.selection():
+                self.focus_table()
+            ticked = sum(1 for r in rows if to_apply(r))
+            msg = (f"{m3ue.playlist['name']}: {len(chans)} channels, {len(rows)} checked against "
+                   f"{idx['lineups']} lineups / {len(idx['stations'])} stations. {ticked} ticked to apply. "
+                   + (f"{att} need{'s' if att == 1 else ''} attention: pick a station below, then press "
+                      "Return for the next one." if att else "Nothing needs attention."))
+            if restored:
+                msg = f"Restored your work on {restored} channel{'' if restored == 1 else 's'}. " + msg
+            self.note(" ".join([msg] + notes), warn=bool(notes) and quiet)
+            self.prog["value"] = 100
 
-        def _visible(self, row):
-            g = self.group_filter.get() if hasattr(self, "group_filter") else "All groups"
-            if g != "All groups" and re.sub(r"\s+\(\d+\)$", "", g) != row.get("group"):
+        # ------------------------------------------------------------ table
+        def in_filter(self, r, key, tag=None):
+            tag = tag or display_status(r)
+            if key == "all":
+                return True
+            if key == "attention":
+                return tag in ATTENTION and not r["write"]
+            if key == "ticked":
+                return to_apply(r)
+            return tag == key
+
+        def matches(self, r, tag, q):
+            g = self.group_filter.get()
+            if g != "All groups" and re.sub(r"\s+\(\d+\)$", "", g) != r.get("group"):
                 return False
-            q = self.name_filter.get().strip().lower() if hasattr(self, "name_filter") else ""
             if q:
-                ch = row["channel"]
+                ch = r["channel"]
                 num = ch.get("effective_channel_number") or ch.get("channel_number")
-                hay = " ".join(str(x) for x in (ch.get("effective_name") or ch.get("name"), row["current"],
-                                                row["new_id"], _fmt_num(num), row.get("group", ""),
-                                                (row["best"] or {}).get("name", ""))).lower()
+                hay = " ".join(str(x) for x in (ch.get("effective_name") or ch.get("name"), r["current"],
+                                                r["new_id"], _fmt_num(num), r.get("group", ""),
+                                                (r["best"] or {}).get("name", ""))).lower()
                 for w in q.split():
                     rng = re.fullmatch(r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)", w)
                     if rng:
-                        if num is None or not float(rng.group(1)) <= float(num) <= float(rng.group(2)):
+                        k = _num_key(num)
+                        if num is None or k[0] or not float(rng.group(1)) <= k[1] <= float(rng.group(2)):
                             return False
                     elif w not in hay:
                         return False
-            f = self.filter.get()
-            if f == "All":
-                return True
-            if f == "Needs attention":
-                return row["status"] in (REVIEW, UNMATCHED, NOT_IN_LINEUP, ERROR, CHANGE) and not row["write"]
-            if f == "Ticked to write":
-                return row["write"]
-            return row["status"] == f
+            return self.in_filter(r, FILTERS[self.filter_idx][0], tag)
 
-        def refresh(self):
-            sel = self.tree.selection()
-            self.tree.delete(*self.tree.get_children())
-            shown = [(i, r) for i, r in enumerate(self.rows) if self._visible(r)]
-            shown.sort(key=lambda x: self._sort_key(x[1]), reverse=self.sort_rev)
-            for i, r in shown:
-                ch, st = r["channel"], r["best"] or {}
-                num = _fmt_num(ch.get("effective_channel_number") or ch.get("channel_number"))
-                self.tree.insert("", "end", iid=str(i), tags=(r["status"],), values=(
-                    "☑" if r["write"] else "☐", num, ch.get("effective_name") or ch.get("name"),
-                    r.get("group", ""), r["current"], r["status"],
-                    "(remove)" if r.get("remove") else r["new_id"], st.get("name", ""),
-                    st.get("callSign", ""), r["why"]))
-            if sel and self.tree.exists(sel[0]):
-                self.tree.selection_set(sel[0])
-            c = {}
-            for r in self.rows:
-                c[r["status"]] = c.get(r["status"], 0) + 1
-            ticked = sum(r["write"] for r in self.rows)
-            self.counts.config(text=f"Showing {len(shown)} of {len(self.rows)}   |   "
-                               + "   ".join(f"{k}: {n}" for k, n in c.items()) + f"   |   ticked: {ticked}")
+        def row_values(self, r):
+            tag = display_status(r)
+            ch, st = r["channel"], r["best"] or {}
+            num = _fmt_num(ch.get("effective_channel_number") or ch.get("channel_number"))
+            mark = (ON if r["write"] else OFF) if can_apply(r) else ""
+            return tag, (mark, num, ch.get("effective_name") or ch.get("name"), r.get("group", ""),
+                         r["current"], tag, "(remove)" if r.get("remove") else r["new_id"],
+                         st.get("name", ""), st.get("callSign", ""), r["why"])
 
-        def _sort_key(self, r):
+        def _sort_key(self, r, tag):
             ch, st = r["channel"], r["best"] or {}
             num = ch.get("effective_channel_number") or ch.get("channel_number")
             col = self.sort_col
             if col == "num":
-                return (num is None, num or 0)
+                return (num is None,) + _num_key(num) + ("",)
             if col in ("current", "new"):
                 v = r["current"] if col == "current" else r["new_id"]
-                return (not v, int(v) if str(v).isdigit() else 0)
-            val = {"write": "0" if r["write"] else "1", "channel": ch.get("effective_name") or ch.get("name"),
-                   "group": r.get("group"), "status": r["status"], "gname": st.get("name"),
+                return (not v, int(v) if str(v).isdigit() else 0, "")
+            val = {"write": "0" if to_apply(r) else "1" if can_apply(r) else "2",
+                   "channel": ch.get("effective_name") or ch.get("name"),
+                   "group": r.get("group"), "status": tag, "gname": st.get("name"),
                    "call": st.get("callSign"), "why": r["why"]}.get(col)
-            return (not val, str(val or "").lower(), num or 0)
+            return (not val, 0, str(val or "").lower()) + _num_key(num)
 
         def sort_by(self, col):
             self.sort_rev = not self.sort_rev if self.sort_col == col else False
             self.sort_col = col
-            self.refresh()
+            self.update_headings()
+            self.rebuild()
+
+        def update_headings(self):
+            for c, h in zip(COLS, HEADS):
+                arrow = (" ▼" if self.sort_rev else " ▲") if c == self.sort_col else ""
+                self.tree.heading(c, text=h + arrow)
+
+        def set_filter(self, idx):
+            self.filter_idx = max(0, idx)
+            self.rebuild()
+            self.root.after_idle(self.focus_table)
+
+        def schedule_find(self):
+            if self.find_job:
+                self.root.after_cancel(self.find_job)
+            self.find_job = self.root.after(150, self.rebuild)
 
         def clear_filters(self):
-            self.filter.set("All")
+            self.filter_idx = 0
             self.group_filter.set("All groups")
-            self.name_filter.set("")  # triggers refresh
+            if self.name_filter.get():
+                self.name_filter.set("")  # rebuilds via schedule_find
+            else:
+                self.rebuild()
 
-        def _row(self):
+        def rebuild(self, keep_view=True):
+            """Refill the table from the filters. Edits never call this; they update rows in place,
+            so the table doesn't jump and an edited row stays put until you change the filters."""
+            self.find_job = None
+            sel = set(self.tree.selection())
+            top = self.tree.yview()[0]
+            self.tree.delete(*self.tree.get_children())
+            q = self.name_filter.get().strip().lower()
+            items = []
+            for i, r in enumerate(self.rows):
+                tag, vals = self.row_values(r)
+                if self.matches(r, tag, q):
+                    items.append((self._sort_key(r, tag), i, tag, vals))
+            items.sort(key=lambda x: x[0], reverse=self.sort_rev)
+            for _, i, tag, vals in items:
+                self.tree.insert("", "end", iid=str(i), tags=(tag,), values=vals)
+            keep = [s for s in sel if self.tree.exists(s)]
+            if keep:
+                self.tree.selection_set(keep)
+            if keep_view:
+                self.tree.yview_moveto(top)
+            if keep:
+                self.tree.see(keep[0])
+            self.update_counts()
+            self.show_detail()
+
+        def update_rows(self, idxs):
+            for i in idxs:
+                if self.tree.exists(str(i)):
+                    tag, vals = self.row_values(self.rows[i])
+                    self.tree.item(str(i), values=vals, tags=(tag,))
+            self.update_counts()
+            self.save_session()
+
+        def update_counts(self):
+            counts, att, ticked = {}, 0, 0
+            for r in self.rows:
+                t = display_status(r)
+                counts[t] = counts.get(t, 0) + 1
+                att += self.in_filter(r, "attention", t)
+                ticked += to_apply(r)
+            labels = []
+            for key, label in FILTERS:
+                n = len(self.rows) if key == "all" else att if key == "attention" else \
+                    ticked if key == "ticked" else counts.get(key, 0)
+                labels.append(f"{label} ({n})")
+            self.show_box.configure(values=labels)
+            self.show_v.set(labels[self.filter_idx])
+            self.copy_btn.configure(text=f"Copy {ticked} ID{'' if ticked == 1 else 's'} for m3u-editor…")
+            self.copy_btn.state(["disabled"] if self.busy or not ticked else ["!disabled"])
+            self.verify_btn.state(["disabled"] if self.busy or not self.m3ue else ["!disabled"])
+            shown = len(self.tree.get_children())
+            self.shown_lbl.configure(text=f"{shown} of {len(self.rows)} channels shown" if self.rows else "")
+
+        def selected(self):
+            """[(index, row)] for the selected channels, in table order."""
+            sel = set(self.tree.selection())
+            return [(int(k), self.rows[int(k)]) for k in self.tree.get_children() if k in sel]
+
+        def targets(self, all_shown=False):
+            rows = [(int(k), self.rows[int(k)]) for k in self.tree.get_children()] if all_shown \
+                else self.selected()
+            if not rows:
+                self.note("No channels are shown." if all_shown else "Select a channel in the table first.",
+                          warn=True)
+            return rows
+
+        def current(self):
             sel = self.tree.selection()
-            return (int(sel[0]), self.rows[int(sel[0])]) if sel else (None, None)
+            if len(sel) != 1:
+                return None, None
+            return int(sel[0]), self.rows[int(sel[0])]
 
-        def _live(self, var, render, wide=lambda: False, alive=lambda: True):
-            """Re-run a station search as the user types.
+        def table_click(self, e):
+            """A click in the Apply column ticks or unticks that channel."""
+            if self.tree.identify_region(e.x, e.y) != "cell" or self.tree.identify_column(e.x) != "#1":
+                return None
+            iid = self.tree.identify_row(e.y)
+            if not iid:
+                return None
+            if iid not in self.tree.selection() or len(self.tree.selection()) == 1:
+                self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            self.tree.focus_set()
+            self.toggle()
+            return "break"
 
-            Local lineup results appear right away; Gracenote-wide results follow in the
-            background when the local ones are weak (or when wide() is ticked). Results from
-            an older keystroke are dropped.
-            """
-            st = {"gen": 0, "after": None, "mute": False, "typed": False}
+        def table_double(self, e):
+            if self.tree.identify_region(e.x, e.y) != "cell" or self.tree.identify_column(e.x) == "#1":
+                return None   # headings, dividers and the Apply column (one click there is enough)
+            iid = self.tree.identify_row(e.y)
+            if iid:
+                self.tree.selection_set(iid)
+                self.toggle()
+            return "break"
 
-            def run():
-                st["after"] = None
-                st["gen"] += 1
-                gen = st["gen"]
-                text = var.get().strip()
-                if not text or not self.matcher or not alive():
-                    return
-                local = merge_candidates(self.matcher, text, self.matcher.search(text),
-                                         self.matcher.suggest(text))
-                render(local, text, False)
-                best = name_score(text, local[0]["name"], _bare_call(local[0])) if local else 0.0
-                if self.cdvr and len(text) >= 2 and (wide() or best < GOOD_LOCAL):
-                    cdvr = self.cdvr
-
-                    def bg():
-                        try:
-                            extra = global_candidates(cdvr, text, self.matcher, limit=25)
-                        except Exception as e:  # only the extra suggestions are lost
-                            log.debug("Live Gracenote search %r failed: %s", text, e)
-                            return
-                        merged = merge_candidates(self.matcher, text, local, extra, limit=30)
-                        self.root.after(0, lambda: gen == st["gen"] and alive() and render(merged, text, True))
-                    threading.Thread(target=bg, name="live-search", daemon=True).start()
-
-            def changed(*_):
-                if st["mute"]:
-                    return
-                st["typed"] = True
-                if st["after"]:
-                    self.root.after_cancel(st["after"])
-                st["after"] = self.root.after(250, run)
-
-            var.trace_add("write", changed)
-            return st, run
-
-        def _set_quiet(self, st, var, value):
-            """Set a live-search box without triggering a search."""
-            if st["after"]:
-                self.root.after_cancel(st["after"])
-                st["after"] = None
-            st["gen"] += 1
-            st["typed"] = False
-            st["mute"] = True
-            try:
-                var.set(value)
-            finally:
-                st["mute"] = False
-
-        def _selected(self, _e=None):
-            _, r = self._row()
-            if not r:
+        def table_menu(self, e):
+            iid = self.tree.identify_row(e.y)
+            if not iid:
                 return
-            ch = r["channel"]
-            self.sel_label.config(text=f"{ch.get('effective_name') or ch.get('name')}   "
-                                       f"(current ID: {r['current'] or '-'}, tvg-id: "
-                                       f"{ch.get('effective_tvg_id') or '-'})   {r['why']}")
-            self._show_cands(r["cands"])
-            self._set_quiet(self.main_live, self.search_v,
-                            re.sub(r"\s+", " ", " ".join(sorted(tokens(ch.get("effective_name") or "")))))
+            if iid not in self.tree.selection():
+                self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            m = tk.Menu(self.root, tearoff=0)
+            self.fill_channel_menu(m)
+            m.tk_popup(e.x_root, e.y_root)
 
-        def _show_cands(self, cands, outside=False):
-            self.cand_list = cands
-            self.cand.delete(0, "end")
-            for s in cands:
-                where = "NOT in your lineups" if outside and s.get("stationId") not in self.matcher.by_id \
-                    else f"in {len(s.get('lineups', []))} lineups"
-                self.cand.insert("end", f"{s.get('stationId'):>7}   {s.get('name')}   [{s.get('callSign')}]   "
-                                        f"{s.get('type') or ''}   ({where})")
-            if not cands:
-                self.cand.insert("end", "(no candidates - search, or enter an ID manually)")
+        # ------------------------------------------------------------ edits (all update rows in place)
+        def after_edit(self, idxs):
+            for i in idxs:
+                self.rows[i]["reviewed"] = True
+            self.update_rows(idxs)
+            self.show_detail()
 
         def _apply(self, i, st, sid, why):
             r = self.rows[i]
             r["remove"] = False
             r["best"], r["new_id"], r["write"], r["why"] = st, sid, True, why
+            if not r["current"]:
+                r["status"] = MATCHED   # same as a pick in the walkthrough
             if r["current"] and sid != r["current"]:
                 r["status"], r["why"] = CHANGE, f"{why}: replaces {r['current']}"
             elif r["current"] and sid == r["current"]:
                 r["status"], r["write"], r["why"] = VERIFIED, False, "same as the current ID"
             log.info("Picked %s for channel %s (%s)", sid, r["channel"]["id"], why)
-            self.refresh()
-            self.save_session()
+            self.after_edit([i])
+            name = r["channel"].get("effective_name") or ""
+            self.note(f"{name}: {sid} {(st or {}).get('name', '')}. Press Return for the next channel.")
 
-        def use_candidate(self):
-            i, r = self._row()
-            pick = self.cand.curselection()
-            if r is None or not pick or not getattr(self, "cand_list", None):
+        def tick_selected(self, on):
+            rows = self.targets()
+            if not rows:
                 return
-            st = self.cand_list[pick[0]]
-            self._apply(i, st, st["stationId"], "picked by you")
-
-        def search(self):
-            if not self.matcher or not self.search_v.get().strip():
-                return
-            text = self.search_v.get()
-            try:
-                hits = find_candidates(self.cdvr, self.matcher, text)
-            except RuntimeError as e:
-                messagebox.showerror("Search failed", str(e))
-                return
-            self._show_cands(hits, outside=True)
-
-        def set_manual(self):
-            i, r = self._row()
-            sid = self.manual_v.get().strip()
-            if r is None or not sid:
-                return
-            if not sid.isdigit():
-                messagebox.showwarning("Invalid ID", "Gracenote station IDs are numbers only.")
-                return
-            st = self.matcher.by_id.get(sid)
-            if not st and not messagebox.askyesno(
-                    "Not in your lineups",
-                    f"Station {sid} is not carried in any lineup for this country/postal code.\n"
-                    "Use it anyway?"):
-                return
-            self._apply(i, st, sid, "entered by you")
-
-        def clear_choice(self):
-            i, r = self._row()
-            if r is None:
-                return
-            was_remove = r.get("remove")
-            r["write"], r["new_id"], r["best"], r["remove"] = False, "", None, False
-            if r["status"] in (CHANGE, REMOVE) or was_remove:
-                r["status"], r["why"] = VERIFIED, "kept the current ID"
-            self.refresh()
-            self.save_session()
+            done = [(i, r) for i, r in rows if can_apply(r)]
+            skipped = len(rows) - len(done)
+            for _, r in done:
+                r["write"] = on
+            if done:
+                self.after_edit([i for i, _ in done])
+            what = f"{'Ticked' if on else 'Unticked'} {len(done)} channel{'' if len(done) == 1 else 's'}"
+            if skipped:
+                what += f"; {skipped} {'has' if skipped == 1 else 'have'} no pick yet"
+            self.note(what + ".", warn=not done)
 
         def toggle(self):
-            i, r = self._row()
-            if r is None:
+            """Space or a click in the Apply column: tick the selection, or untick it if all are ticked."""
+            rows = self.targets()
+            if not rows:
                 return
-            if not r["new_id"] and not r.get("remove"):
-                messagebox.showinfo("No ID", "Pick a candidate or enter an ID first.")
+            ready = [r for _, r in rows if can_apply(r)]
+            if not ready:
+                self.note("Nothing to tick: pick a station for " + (
+                    "this channel" if len(rows) == 1 else "those channels") + " first.", warn=True)
                 return
-            r["write"] = not r["write"]
-            self.refresh()
-            self.save_session()
+            self.tick_selected(not all(r["write"] for r in ready))
+
+        def mark_reviewed(self, all_shown=False):
+            rows = self.targets(all_shown)
+            if rows:
+                self.after_edit([i for i, _ in rows])
+                self.note(f"Marked {len(rows)} channel{'s' if len(rows) > 1 else ''} reviewed.")
+
+        def done_next(self):
+            """Accept the selected channel(s) as they are and move to the next channel shown."""
+            rows = self.selected()
+            if not rows:
+                self.focus_table()
+                return
+            for _, r in rows:
+                r["reviewed"] = True
+            kids = list(self.tree.get_children())
+            last = max(kids.index(str(i)) for i, _ in rows)
+            nxt = kids[last + 1] if last + 1 < len(kids) else None
+            self.update_rows([i for i, _ in rows])
+            q = self.name_filter.get().strip().lower()
+            for i, r in rows:   # handled rows leave a filtered view such as Needs attention
+                if not self.matches(r, display_status(r), q):
+                    self.tree.delete(str(i))
+            self.update_counts()
+            if len(rows) == 1:
+                r = rows[0][1]
+                state = ("will be applied" if to_apply(r) else display_status(r).lower())
+                self.note(f"{r['channel'].get('effective_name')}: {state}. "
+                          + ("" if nxt else "That was the last channel shown. Press Copy when you're ready."))
+            if nxt and self.tree.exists(nxt):
+                self.tree.selection_set(nxt)
+                self.tree.focus(nxt)
+                self.tree.see(nxt)
+            else:
+                self.tree.selection_set(())
+            self.tree.focus_set()
+
+        def _kept_current(self, r):
+            st = self.matcher.by_id.get(r["current"]) if self.matcher else None
+            r.update(new_id=r["current"] if st else "", best=st, status=VERIFIED if st else NOT_IN_LINEUP,
+                     why="kept the current ID")
+
+        def clear_choice(self, idxs=None):
+            rows = [(i, self.rows[i]) for i in idxs] if idxs is not None else self.targets()
+            for _, r in rows:
+                was = r.get("remove") or r["status"] in (CHANGE, REMOVE)
+                r["write"], r["new_id"], r["best"], r["remove"] = False, "", None, False
+                if r["current"]:
+                    if was or r["status"] == VERIFIED:
+                        self._kept_current(r)
+                elif r["status"] in (MATCHED, VERIFIED, REMOVE, CHANGE):
+                    r["status"], r["why"] = (REVIEW if r["cands"] else UNMATCHED), "no ID chosen"
+            if rows:
+                self.after_edit([i for i, _ in rows])
+                self.note("Cleared. " + ("That channel" if len(rows) == 1 else f"Those {len(rows)} channels")
+                          + " won't change.")
 
         def _set_remove(self, r):
-            """Mark a row so Write clears its station ID. Returns False if there is nothing to remove."""
+            """Mark a row so Copy clears its station ID. Returns False if there is nothing to remove."""
             if not r["current"]:
                 return False
             r.update(remove=True, new_id="", best=None, write=True, status=REMOVE,
@@ -1845,14 +2549,28 @@ def run_gui():
             return True
 
         def remove_id(self):
-            i, r = self._row()
-            if r is None:
+            rows = self.targets()
+            if not rows:
                 return
-            if not self._set_remove(r):
-                messagebox.showinfo("No ID", "This channel has no station ID to remove.")
+            have = [(i, r) for i, r in rows if r["current"]]
+            if not have:
+                self.note(("This channel has" if len(rows) == 1 else "Those channels have")
+                          + " no station ID to remove.", warn=True)
                 return
-            self.refresh()
-            self.save_session()
+            for _, r in have:
+                self._set_remove(r)
+            self.after_edit([i for i, _ in have])
+            self.note(f"{len(have)} station ID{' is' if len(have) == 1 else 's are'} set to be removed.")
+
+        def reset_rows(self):
+            rows = self.targets()
+            for _, r in rows:
+                r.update(r["auto"])
+                r.update(remove=False, reviewed=False)
+            if rows:
+                self.update_rows([i for i, _ in rows])
+                self.show_detail()
+                self.note("Back to the matcher's result.")
 
         @staticmethod
         def _mark_change(r):
@@ -1861,80 +2579,278 @@ def run_gui():
             elif r["current"]:
                 r["status"], r["write"], r["why"] = VERIFIED, False, "same as the current ID"
 
+        # ------------------------------------------------------------ channel detail
+        def set_detail_enabled(self, on):
+            for b in self.d_buttons:
+                b.state(["!disabled"] if on else ["disabled"])
+
+        def where(self, st):
+            if self.matcher and st.get("stationId") in self.matcher.by_id:
+                n = len(self.matcher.by_id[st["stationId"]].get("lineups", []))
+                return f"in {n} lineup{'' if n == 1 else 's'}"
+            return "not in your lineups"
+
+        def show_detail(self):
+            i, r = self.current()
+            same = i is not None and i == self.shown_i
+            self.shown_i = i
+            if r is None:
+                n = len(self.tree.selection())
+                self.cand.delete(*self.cand.get_children())
+                self.cand_ids, self.cand_st = [], {}
+                self.list_box.configure(text="Suggestions")
+                self.list_info.configure(text="")
+                self.set_detail_enabled(False)
+                if n:
+                    self.d_title.configure(text=f"{n} channels selected")
+                    self.d_sub.configure(text="Use Tick selected, Untick selected or Mark reviewed below "
+                                              "(or right-click) to change them all at once.")
+                else:
+                    self.d_title.configure(text="Select a channel above." if self.rows else "")
+                    self.d_sub.configure(text="")
+                return
+            self.set_detail_enabled(True)
+            ch = r["channel"]
+            name = ch.get("effective_name") or ch.get("name") or ""
+            num = _fmt_num(ch.get("effective_channel_number") or ch.get("channel_number"))
+            self.d_title.configure(text=f"{str(num) + '   ' if num != '' else ''}{name}"
+                                        + (f"   ·   {r['group']}" if r.get("group") else ""))
+            st = r["best"] or {}
+            if r.get("remove"):
+                plan = f"Will remove the current ID {r['current']}."
+            elif can_apply(r):
+                plan = (f"Will {'replace ' + r['current'] + ' with' if r['current'] else 'apply'} "
+                        f"{r['new_id']} {st.get('name', '')}" + ("" if r["write"] else " (unticked)") + ".")
+            else:
+                plan = "Nothing to apply."
+            self.d_sub.configure(text=f"Current ID: {r['current'] or '-'}   ·   tvg-id: "
+                                      f"{ch.get('effective_tvg_id') or '-'}   ·   {r['why']}   ·   {plan}")
+            if not same:
+                self.list_mode, self.results = "suggest", []
+                self.live.set_quiet(search_phrase(name))
+            self.fill_list(r, same)
+
+        def fill_list(self, r, same):
+            """The station list: suggestions for the channel, or search results while searching."""
+            top = self.cand.yview()[0] if same else 0.0
+            self.cand.delete(*self.cand.get_children())
+            self.cand_ids, self.cand_st = [], {}
+            name = r["channel"].get("effective_name") or r["channel"].get("name") or ""
+            items = []
+            if self.list_mode == "search":
+                items = self.results
+                self.list_box.configure(text=f"Search results for '{self.results_text}'  —  click a line to "
+                                             "use it (or press 1-9)")
+            else:
+                if r["current"]:
+                    st = self.matcher.by_id.get(r["current"]) if self.matcher else None
+                    items.append(st or {"stationId": r["current"], "name": "", "callSign": "", "type": ""})
+                if r["best"]:
+                    items.append(r["best"])
+                items += r["cands"]
+                self.list_box.configure(text=f"Suggestions for {name}  —  click a line to use it (or press 1-9)")
+            for st in items:
+                sid = str(st.get("stationId") or "")
+                if not sid or sid in self.cand_st:
+                    continue
+                self.cand_st[sid] = st
+                self.cand_ids.append(sid)
+                n = len(self.cand_ids)
+                picked = sid == r["new_id"] and not r.get("remove")
+                mark = (ON if r["write"] or sid == r["current"] else OFF) if picked else ""
+                where = self.where(st)
+                if sid == r["current"]:
+                    where = ("current ID, to be removed" if r.get("remove") else "current ID") + " · " + where
+                tags = ("on",) if picked else ("cur",) if sid == r["current"] else \
+                    ("outside",) if where.startswith("not in") else ()
+                self.cand.insert("", "end", iid=sid, tags=tags, values=(
+                    n if n <= 9 else "", mark, st.get("name") or "", st.get("callSign") or "",
+                    st.get("type") or "", where, sid))
+            text = self.search_v.get().strip()
+            if self.list_mode == "search":
+                info = f"{len(self.cand_ids)} found" + (f"  ·  {self.results_note}" if self.results_note else "")
+                info += "  ·  Esc or ✕ shows the suggestions again"
+                empty = "Nothing found. Try other words, tick All of Gracenote, or type a station ID below."
+            else:
+                info = (f"Press Return in the search box to search for '{text}', or type something else."
+                        if text else "Type in the search box to look for other stations.")
+                empty = "No suggestions. Use the search box above, or type a station ID below."
+            self.list_info.configure(text=info)
+            if not self.cand_ids:
+                self.cand.insert("", "end", iid="none", values=("", "", empty, "", "", "", ""))
+            if same:
+                self.cand.yview_moveto(top)
+
+        def show_results(self, cands, text, note):
+            """LiveSearch result: a list of stations, or None when the search box was cleared."""
+            if cands is None:
+                self.list_mode, self.results = "suggest", []
+            else:
+                self.list_mode, self.results, self.results_text, self.results_note = "search", cands, text, note
+            i, r = self.current()
+            if r is not None:
+                self.fill_list(r, False)
+
+        def focus_list(self):
+            kids = [k for k in self.cand.get_children() if k != "none"]
+            if kids:
+                self.cand.focus_set()
+                self.cand.selection_set(kids[0])
+                self.cand.focus(kids[0])
+                self.cand.see(kids[0])
+
+        def cand_click(self, e):
+            if self.cand.identify_region(e.x, e.y) not in ("cell", "tree"):
+                return None   # headings and column dividers work as usual
+            iid = self.cand.identify_row(e.y)
+            if not iid or iid == "none":
+                return "break"
+            self.cand.selection_set(iid)
+            self.cand.focus(iid)
+            self.cand.focus_set()
+            self.use_cand(iid)
+            return "break"
+
+        def pick_number(self, k):
+            """1-9: use that station and go to the next channel."""
+            i, r = self.current()
+            if r is None:
+                self.note("Select one channel to pick a station for it.", warn=True)
+                return
+            if k > len(self.cand_ids):
+                self.note(f"There is no station {k} in the list.", warn=True)
+                return
+            sid = self.cand_ids[k - 1]
+            if not (sid == r["new_id"] and r["write"] and not r.get("remove")):   # never clears a pick
+                self.use_cand(sid)
+            self.done_next()
+
+        def use_cand(self, sid):
+            i, r = self.current()
+            if r is None or not sid or sid not in self.cand_st:
+                return
+            if sid == r["new_id"] and r["write"] and not r.get("remove") and sid != r["current"]:
+                self.clear_choice([i])   # clicking the picked station again clears it
+                return
+            self._apply(i, self.cand_st[sid], sid, "picked by you")
+            if self.cand.exists(sid):
+                self.cand.selection_set(sid)
+                self.cand.see(sid)
+
+        def set_manual(self):
+            i, r = self.current()
+            sid = self.manual_v.get().strip()
+            if r is None:
+                self.note("Select one channel in the table first.", warn=True)
+                return
+            if not sid:
+                self.note("Type a station ID first.", warn=True)
+                return
+            if not sid.isdigit():
+                self.note("Gracenote station IDs are numbers only.", warn=True)
+                return
+            st = self.matcher.by_id.get(sid)
+            self.manual_v.set("")
+            self._apply(i, st, sid, "entered by you")
+
         # ------------------------------------------------------------ walkthrough
         def walkthrough(self):
             """Step through every channel without a chosen ID and pick from options."""
-            todo = [i for i, r in enumerate(self.rows)
-                    if not r["write"] and r["status"] in (REVIEW, UNMATCHED, NOT_IN_LINEUP, ERROR)]
-            visible = {int(x) for x in self.tree.get_children()}
+            if not self.matcher:
+                self.note("Connect first.", warn=True)
+                return
+            shown = [int(x) for x in self.tree.get_children()]
+            todo = [i for i, r in enumerate(self.rows) if not r["write"] and not r.get("reviewed")
+                    and r["status"] in (REVIEW, UNMATCHED, ERROR)]
             if self.name_filter.get().strip():
                 # Find active: step through exactly what the table shows, even channels that have an ID
-                todo = [i for i in range(len(self.rows)) if i in visible]
+                todo = shown
             elif self.group_filter.get() != "All groups":
-                # group only: the unmatched channels in that group
-                todo = [i for i in todo if i in visible]
-            if not self.matcher:
-                messagebox.showinfo("Not connected", "Press Connect & Match first.")
-                return
+                # group only: the unmatched channels in that group, in table order
+                want = set(todo)
+                todo = [i for i in shown if i in want]
             if not todo:
-                messagebox.showinfo("All done", "No unmatched channels left.")
+                self.note("No unmatched channels left.")
                 return
 
             win = tk.Toplevel(self.root)
             win.title("Match unmatched channels")
             win.geometry("900x560")
+            win.minsize(640, 420)
             win.transient(self.root)
             state = {"pos": 0, "cands": []}
+            outer = ttk.Frame(win, padding=10)
+            outer.pack(fill="both", expand=True)
 
-            head = ttk.Label(win, font=("TkDefaultFont", 14, "bold"))
-            head.pack(anchor="w", padx=10, pady=(10, 0))
-            sub = ttk.Label(win, foreground="gray")
-            sub.pack(anchor="w", padx=10)
-            ttk.Label(win, text="Pick the right station (double-click, Enter, or press 1-9). "
-                                "Esc = skip. Type in Search for other stations.").pack(anchor="w", padx=10, pady=(8, 2))
-            lb = tk.Listbox(win, height=14, exportselection=False, font=("TkFixedFont", 12))
-            lb.pack(fill="both", expand=True, padx=10)
+            head = ttk.Label(outer, font=self.bold)
+            head.pack(side="top", anchor="w")
+            sub = ttk.Label(outer, foreground="gray")
+            sub.pack(side="top", anchor="w")
+            ttk.Label(outer, text="Pick the right station (click, Return, or press 1-9). "
+                                  "Esc = skip. Type in Search for other stations.").pack(
+                side="top", anchor="w", pady=(8, 2))
 
-            srow = ttk.Frame(win)
-            srow.pack(fill="x", padx=10, pady=6)
+            brow = ttk.Frame(outer)
+            brow.pack(side="bottom", fill="x", pady=(8, 0))
+            prog = ttk.Label(brow, width=1)
+            irow = ttk.Frame(outer)
+            irow.pack(side="bottom", fill="x", pady=(4, 0))
+            srow = ttk.Frame(outer)
+            srow.pack(side="bottom", fill="x", pady=(6, 0))
+            info = ttk.Label(outer, foreground="gray", width=1)
+            info.pack(side="bottom", fill="x", pady=(4, 0))
+            box, lb = scrolled_tree(outer, ("n",) + STATION_COLS, ("#",) + STATION_HEADS,
+                                    (30,) + STATION_WIDTHS, "id", selectmode="browse", height=12)
+            box.pack(side="top", fill="both", expand=True)
+            lb.column("n", anchor="center")
+            lb.tag_configure("outside", foreground="#a04000")
+
             ttk.Label(srow, text="Search:").pack(side="left")
             sv = tk.StringVar()
-            se = ttk.Entry(srow, textvariable=sv, width=34)
-            se.pack(side="left", padx=4)
+            se = ttk.Entry(srow, textvariable=sv, width=30)
             outside = tk.BooleanVar(value=False)
             ttk.Checkbutton(srow, text="search all of Gracenote (not just my lineups)",
-                            variable=outside).pack(side="left", padx=6)
-            ttk.Label(srow, text="ID:").pack(side="left", padx=(12, 0))
+                            variable=outside).pack(side="right", padx=(6, 0))
+            ttk.Button(srow, text="Search", command=lambda: live.schedule(0)).pack(side="right")
+            se.pack(side="left", padx=4, fill="x", expand=True)
+            ttk.Label(irow, text="Or a station ID:").pack(side="left")
             iv = tk.StringVar()
-            ttk.Entry(srow, textvariable=iv, width=10).pack(side="left", padx=4)
+            ie = ttk.Entry(irow, textvariable=iv, width=10)
+            ie.pack(side="left", padx=4)
 
-            brow = ttk.Frame(win)
-            brow.pack(fill="x", padx=10, pady=(0, 10))
-            prog = ttk.Label(brow)
-            prog.pack(side="left")
+            def alive():
+                return bool(win.winfo_exists())
 
             def fill(cands, note="", focus=True):
                 state["cands"] = cands
-                lb.delete(0, "end")
+                lb.delete(*lb.get_children())
                 for n, s in enumerate(cands, 1):
-                    where = ("NOT in your lineups (Gracenote-wide)" if s.get("stationId") not in self.matcher.by_id
-                             else f"{len(self.matcher.by_id[s['stationId']]['lineups'])} lineups")
-                    lb.insert("end", f"{n:>2}. {s.get('stationId'):>7}  {(s.get('name') or '?')[:40]:<40} "
-                                     f"{s.get('callSign') or '':<9} {where}")
+                    where = self.where(s)
+                    lb.insert("", "end", iid=str(n - 1), tags=("outside",) if where.startswith("not in") else (),
+                              values=(n if n <= 9 else "", s.get("name") or "?", s.get("callSign") or "",
+                                      s.get("type") or "", where, s.get("stationId")))
+                info.configure(text=note if not cands or note else f"{len(cands)} options")
                 if not cands:
-                    lb.insert("end", note or "No options. Try a search, or type a station ID.")
+                    lb.insert("", "end", iid="none", values=(
+                        "", note or "No options. Try a search, or type a station ID.", "", "", "", ""))
                 else:
-                    lb.selection_set(0)
+                    lb.selection_set("0")
+                    lb.focus("0")
                 if focus:
                     lb.focus_set()
 
+            def close():
+                self.rebuild()
+                win.destroy()
+                self.tree.focus_set()
+
             def show():
                 if state["pos"] >= len(todo):
-                    self.refresh()
                     left = sum(1 for i in todo if not self.rows[i]["write"])
-                    messagebox.showinfo("Done", f"Finished. {len(todo) - left} picked, {left} skipped.\n"
-                                                "Press 'Copy ticked IDs for m3u-editor' to apply them.", parent=win)
-                    win.destroy()
+                    n = sum(1 for r in self.rows if to_apply(r))
+                    close()
+                    self.note(f"Finished: {len(todo) - left} picked, {left} skipped. "
+                              f"Press Copy {n} IDs for m3u-editor to apply them.")
                     return
                 r = self.rows[todo[state["pos"]]]
                 ch = r["channel"]
@@ -1944,155 +2860,151 @@ def run_gui():
                                 f"current ID: {r['current'] or '-'}    {r['why']}")
                 prog.config(text=f"Channel {state['pos'] + 1} of {len(todo)}")
                 cands = merge_candidates(self.matcher, name, r["cands"], self.matcher.suggest(name))
-                self._set_quiet(live, sv, search_phrase(name))
+                live.set_quiet(search_phrase(name))
                 iv.set("")
-                fill(cands, "Looking wider in Gracenote…")
                 best = name_score(name, cands[0]["name"], _bare_call(cands[0])) if cands else 0
-                if best < 0.9 and self.cdvr:
-                    pos = state["pos"]
+                wide = best < 0.9 and self.cdvr
+                fill(cands, "Looking wider in Gracenote…" if wide else "")
+                if wide:
+                    pos, cdvr, matcher = state["pos"], self.cdvr, self.matcher
+
+                    def post(fn):
+                        self.q.put(("call", (None, lambda: alive() and state["pos"] == pos and fn())))
 
                     def bg():
                         try:
-                            extra = global_candidates(self.cdvr, name, self.matcher)
+                            extra = global_candidates(cdvr, name, matcher)
                         except Exception as e:  # network trouble only loses the extra suggestions
                             log.warning("Background Gracenote search for %r failed: %s", name, e)
-                            win.after(0, lambda: state["pos"] == pos and win.winfo_exists() and prog.config(
-                                text=prog.cget("text") + "   (Gracenote search failed - press Search to retry)"))
+                            post(lambda: info.configure(text="Gracenote search failed - press Search to retry"))
                             return
-                        if extra:
-                            win.after(0, lambda: state["pos"] == pos and win.winfo_exists() and not live["typed"] and fill(
-                                merge_candidates(self.matcher, name, cands, extra), focus=False))
+                        post(lambda: live.typed or fill(merge_candidates(matcher, name, cands, extra),
+                                                        "" if extra else "Nothing more in Gracenote.",
+                                                        focus=False))
                     threading.Thread(target=bg, name="suggest", daemon=True).start()
 
             def advance():
                 state["pos"] += 1
                 show()
 
-            def pick(_e=None, index=None):
-                sel = [index] if index is not None else lb.curselection()
-                if not sel or sel[0] >= len(state["cands"]):
-                    return
-                st = state["cands"][sel[0]]
-                i = todo[state["pos"]]
-                if st.get("stationId") not in self.matcher.by_id and not messagebox.askyesno(
-                        "Not in your lineups",
-                        f"{st.get('name')} ({st.get('stationId')}) is not carried in your lineups.\n"
-                        "Use it anyway?", parent=win):
-                    return
-                self.rows[i].update(best=st, new_id=st["stationId"], write=True,
-                                    status=MATCHED, why="picked by you", remove=False)
-                self._mark_change(self.rows[i])
-                log.info("Walkthrough: picked %s for channel %s", st["stationId"], self.rows[i]["channel"]["id"])
-                self.save_session()
+            def take(i, st, sid, why):
+                r = self.rows[i]
+                r.update(best=st, new_id=sid, write=True, status=MATCHED, why=why, remove=False, reviewed=True)
+                self._mark_change(r)
+                log.info("Walkthrough: %s %s for channel %s", why, sid, r["channel"]["id"])
+                self.update_rows([i])
                 advance()
 
-            def use_id():
+            def pick(_e=None, index=None):
+                sel = [index] if index is not None else [int(k) for k in lb.selection() if k != "none"]
+                if not sel or sel[0] >= len(state["cands"]):
+                    return "break"
+                st = state["cands"][sel[0]]
+                take(todo[state["pos"]], st, st["stationId"], "picked by you")
+                return "break"
+
+            def use_id(_e=None):
                 sid = iv.get().strip()
                 if not sid.isdigit():
-                    messagebox.showwarning("Invalid ID", "Station IDs are numbers only.", parent=win)
-                    return
+                    self.note("Station IDs are numbers only.", warn=True)
+                    return "break"
                 st = self.matcher.by_id.get(sid)
-                if not st and not messagebox.askyesno(
-                        "Not in your lineups", f"Station {sid} is not in your lineups. Use it anyway?",
-                        parent=win):
-                    return
-                self.rows[todo[state["pos"]]].update(best=st, new_id=sid, write=True,
-                                                     status=MATCHED, why="entered by you", remove=False)
-                self._mark_change(self.rows[todo[state["pos"]]])
-                log.info("Walkthrough: entered %s for channel %s", sid, self.rows[todo[state["pos"]]]["channel"]["id"])
-                self.save_session()
-                advance()
-
-            def do_search(_e=None):
-                text = sv.get().strip()
-                if not text:
-                    return
-                try:
-                    fill(find_candidates(self.cdvr, self.matcher, text, wide=outside.get()),
-                         "Gracenote found nothing.")
-                except RuntimeError as e:
-                    messagebox.showerror("Search failed", str(e), parent=win)
+                take(todo[state["pos"]], st, sid, "entered by you")
+                return "break"
 
             def back():
                 if state["pos"] > 0:
                     state["pos"] -= 1
                     show()
 
-            ttk.Button(srow, text="Search", command=do_search).pack(side="left")
-            ttk.Button(srow, text="Use ID", command=use_id).pack(side="left", padx=4)
-            ttk.Button(brow, text="Stop", command=lambda: (self.refresh(), win.destroy())).pack(side="right")
-            ttk.Button(brow, text="Skip", command=advance).pack(side="right", padx=4)
-
             def remove():
-                r = self.rows[todo[state["pos"]]]
-                if not self._set_remove(r):
-                    messagebox.showinfo("No ID", "This channel has no station ID to remove.", parent=win)
+                i = todo[state["pos"]]
+                if not self._set_remove(self.rows[i]):
+                    self.note("This channel has no station ID to remove.", warn=True)
                     return
-                self.save_session()
+                self.rows[i]["reviewed"] = True
+                self.update_rows([i])
                 advance()
+
+            ttk.Button(irow, text="Use ID", command=use_id).pack(side="left")
+            ttk.Button(brow, text="Stop", command=close).pack(side="right")
+            ttk.Button(brow, text="Skip (Esc)", command=advance).pack(side="right", padx=4)
             ttk.Button(brow, text="Remove ID", command=remove).pack(side="right", padx=4)
             ttk.Button(brow, text="Back", command=back).pack(side="right", padx=4)
-            ttk.Button(brow, text="Use selected", command=pick).pack(side="right", padx=4)
-            se.bind("<Return>", do_search)
-            live, run_live = self._live(
-                sv, lambda c, t, w: fill(c, "No matches yet. Keep typing, or tick 'search all of Gracenote'.",
-                                         focus=False),
-                wide=outside.get, alive=win.winfo_exists)
-            outside.trace_add("write", lambda *a: run_live())
+            ttk.Button(brow, text="Use selected  ⏎", default="active", command=pick).pack(side="right", padx=4)
+            prog.pack(side="left", fill="x", expand=True)
+            live = LiveSearch(self, sv, lambda c, t, n: fill(
+                c or [], n or ("" if c else "No matches yet. Keep typing, or tick 'search all of Gracenote'."),
+                focus=False), wide=outside.get, alive=alive)
+            outside.trace_add("write", lambda *a: live.schedule(0))
+            se.bind("<Return>", lambda e: (live.schedule(0), "break")[1])
             se.bind("<FocusIn>", lambda e: se.after_idle(lambda: se.select_range(0, "end")))
             se.bind("<Down>", lambda e: (lb.focus_set(), "break")[1])
-            win.bind("/", lambda e: (se.focus_set(), "break")[1])
-            lb.bind("<Double-1>", pick)
+            ie.bind("<Return>", use_id)
+            win.bind("/", lambda e: None if e.widget in (se, ie) else (se.focus_set(), "break")[1])
+            lb.bind("<Double-1>", lambda e: pick() if lb.identify_region(e.x, e.y) == "cell" else None)
             lb.bind("<Return>", pick)
+            lb.bind("<KP_Enter>", pick)
             win.bind("<Escape>", lambda e: advance())
             for k in range(1, 10):
                 lb.bind(str(k), lambda e, k=k: pick(index=k - 1))
-            win.protocol("WM_DELETE_WINDOW", lambda: (self.refresh(), win.destroy()))
+            win.protocol("WM_DELETE_WINDOW", close)
             show()
 
+        # ------------------------------------------------------------ export, copy, verify
         def export(self):
             rows = [r for r in self.rows if not r["write"] and r["status"] != VERIFIED]
             if not rows:
-                messagebox.showinfo("Nothing to export", "Every channel has an ID ticked or verified.")
+                self.note("Nothing to export: every channel has an ID ticked or verified.", warn=True)
                 return
-            path = filedialog.asksaveasfilename(defaultextension=".csv",
+            path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".csv",
                                                 initialfile="unmatched_stationids.csv")
             if not path:
                 return
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f)
-                w.writerow(["channel_number", "name", "tvg_id", "current_id", "status", "reason",
-                            "candidates"])
-                for r in rows:
-                    ch = r["channel"]
-                    w.writerow([ch.get("effective_channel_number"), ch.get("effective_name"),
-                                ch.get("effective_tvg_id") or "", r["current"], r["status"], r["why"],
-                                "; ".join(f"{s['stationId']} {s['name']} [{s['callSign']}]"
-                                          for s in r["cands"][:5])])
-            self.status.config(text=f"Saved {len(rows)} unmatched channels to {path}")
+            try:
+                with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f)
+                    w.writerow(["channel_number", "name", "tvg_id", "current_id", "status", "reason",
+                                "candidates"])
+                    for r in rows:
+                        ch = r["channel"]
+                        w.writerow([ch.get("effective_channel_number"), ch.get("effective_name"),
+                                    ch.get("effective_tvg_id") or "", r["current"], r["status"], r["why"],
+                                    "; ".join(f"{s['stationId']} {s['name']} [{s['callSign']}]"
+                                              for s in r["cands"][:5])])
+            except OSError as e:
+                messagebox.showerror("Export failed", f"Could not save {path}:\n\n{e}", parent=self.root)
+                return
+            self.note(f"Saved {len(rows)} unmatched channels to {path}")
 
-        def export_plugin(self):
-            path = filedialog.asksaveasfilename(defaultextension=".zip", initialfile=PLUGIN_ZIP,
+        def export_plugin(self, parent=None):
+            parent = parent or self.root
+            path = filedialog.asksaveasfilename(parent=parent, defaultextension=".zip", initialfile=PLUGIN_ZIP,
                                                 filetypes=[("Zip archive", "*.zip")])
             if not path:
                 return
             try:
                 export_plugin(path)
             except OSError as e:
-                messagebox.showerror("Export failed", str(e))
+                messagebox.showerror("Export failed", str(e), parent=parent)
                 return
-            self.status.config(text=f"Saved the m3u-editor plugin to {path}")
-            messagebox.showinfo("Install the plugin in m3u-editor (once)", PLUGIN_STEPS.format(path=path))
+            self._save_settings(plugin_exported=True)
+            self.note(f"Saved the m3u-editor plugin to {path}")
+            messagebox.showinfo("Install the plugin in m3u-editor (once)", PLUGIN_STEPS.format(path=path),
+                                parent=parent)
 
         def write(self):
-            todo = [r for r in self.rows if r["write"] and (
-                (r.get("remove") and r["current"]) or (r["new_id"] and r["new_id"] != r["current"]))]
+            """Copy every ticked change for the plugin's Apply Station IDs action."""
+            if self.busy:
+                self.note("Still working, one moment…", warn=True)
+                return
+            todo = [r for r in self.rows if to_apply(r)]
             if not todo:
-                messagebox.showinfo("Nothing to copy", "No ticked rows with a new station ID.")
+                self.note("Nothing to copy: no ticked channel has a new station ID.", warn=True)
                 return
             removals = [r for r in todo if r.get("remove")]
             changes = [r for r in todo if r["current"] and not r.get("remove")]
-            msg = f"Copy {len(todo)} station ID changes for m3u-editor?"
+            msg = f"Copy {len(todo)} station ID change{'s' if len(todo) != 1 else ''} for m3u-editor?"
             if removals:
                 lines = [f"  {r['channel'].get('effective_name')}: {r['current']} -> (no ID)" for r in removals[:12]]
                 if len(removals) > 12:
@@ -2104,7 +3016,7 @@ def run_gui():
                 if len(changes) > 12:
                     lines.append(f"  ...and {len(changes) - 12} more")
                 msg += f"\n\n{len(changes)} of these REPLACE an existing ID:\n" + "\n".join(lines)
-            if not messagebox.askyesno("Copy for m3u-editor", msg):
+            if not messagebox.askyesno("Copy for m3u-editor", msg, parent=self.root):
                 return
             text = station_id_lines(self.m3ue.playlist, todo)
             saved = os.path.join(CONFIG_DIR, "station_ids_to_apply.txt")
@@ -2117,77 +3029,174 @@ def run_gui():
                 saved = "(could not save a copy)"
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-            self.root.update()  # keep the clipboard after the dialog closes on X11
+            self.root.update_idletasks()
             self.copied = todo
             log.info("Copied %d IDs for m3u-editor, %d replacing existing, %d removing: %s", len(todo),
                      len(changes), len(removals),
                      ", ".join(f"{r['channel']['id']}:{r['current']}->{r['new_id'] or '(none)'}" for r in todo))
             self.save_session(True)
-            self.status.config(text=f"Copied {len(todo)} station IDs. Apply them in m3u-editor, then press Verify.")
-            messagebox.showinfo("Apply in m3u-editor", APPLY_STEPS.format(
-                n=len(todo), playlist=self.m3ue.playlist["name"], saved=saved))
+            self.note(f"Copied {len(todo)} station IDs. Apply them in m3u-editor, then press Verify.")
+            self.show_apply(todo, text, saved)
+
+        def apply_alive(self):
+            try:
+                return bool(self.apply_win and self.apply_win.winfo_exists())
+            except tk.TclError:
+                return False
+
+        def show_apply(self, todo, text, saved):
+            """One window for the whole apply step: what changes, where to paste it, and Verify."""
+            if self.apply_alive():
+                self.apply_win.destroy()
+            top = self.apply_win = tk.Toplevel(self.root)
+            top.title("Apply in m3u-editor")
+            top.transient(self.root)
+            top.geometry("820x600")
+            top.minsize(620, 460)
+            frm = ttk.Frame(top, padding=12)
+            frm.pack(fill="both", expand=True)
+            removals = [r for r in todo if r.get("remove")]
+            changes = [r for r in todo if r["current"] and not r.get("remove")]
+            new = len(todo) - len(removals) - len(changes)
+            ttk.Label(frm, text=f"{len(todo)} station ID{' is' if len(todo) == 1 else 's are'} on your "
+                                "clipboard", font=self.bold).pack(side="top", anchor="w")
+            parts = [f"{new} new"] if new else []
+            if changes:
+                parts.append(f"{len(changes)} REPLACE an existing ID")
+            if removals:
+                parts.append(f"{len(removals)} REMOVE an ID")
+            ttk.Label(frm, text=", ".join(parts) + ". Nothing changes in m3u-editor until you paste them there "
+                                "and confirm.", wraplength=780, justify="left").pack(side="top", anchor="w")
+
+            steps = ttk.LabelFrame(frm, text="In m3u-editor", padding=8)
+            steps.pack(side="top", fill="x", pady=(8, 6))
+            pl = self.m3ue.playlist
+            for n, (line, btn) in enumerate((
+                    ("Extensions > Extensions > Gracenote Station IDs > Actions > Apply Station IDs.",
+                     ("Open m3u-editor", lambda: webbrowser.open(self.m3ue.base))),
+                    (f"Playlist: {pl['name']}" + (f" (#{pl['id']})" if pl.get("id") else "")
+                     + ". Paste into \"Station IDs from the matcher\", then confirm.",
+                     ("Copy again", lambda: self._copy_again(text))),
+                    ("When the run shows as completed under Run History, press Verify below.", None)), 1):
+                ttk.Label(steps, text=f"{n}.").grid(row=n, column=0, sticky="nw", padx=(0, 4), pady=2)
+                ttk.Label(steps, text=line, wraplength=560, justify="left").grid(row=n, column=1, sticky="w",
+                                                                                 pady=2)
+                if btn:
+                    ttk.Button(steps, text=btn[0], command=btn[1]).grid(row=n, column=2, sticky="e", padx=(8, 0))
+            steps.columnconfigure(1, weight=1)
+            ttk.Label(steps, text=f"It runs in the background and only touches channels in that playlist. "
+                                  f"A copy of the IDs is saved in {saved}.", foreground="gray",
+                      wraplength=740, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+            btns = ttk.Frame(frm)
+            btns.pack(side="bottom", fill="x", pady=(8, 0))
+            ttk.Button(btns, text="Close", command=top.destroy).pack(side="right")
+            self.apply_verify = ttk.Button(btns, text="Verify in m3u-editor", default="active", command=self.verify)
+            self.apply_verify.pack(side="right", padx=6)
+            if self.busy:
+                self.apply_verify.state(["disabled"])
+            b = ttk.Button(btns, text="Export plugin…", command=lambda: self.export_plugin(parent=top))
+            b.pack(side="left")
+            Tip(b, "First time? Install the Gracenote Station IDs plugin in m3u-editor once.")
+            self.apply_msg = ttk.Label(frm, text="" if read_json(SETTINGS_FILE).get("plugin_exported") else
+                                       "First time? Install the plugin once: press Export plugin… and "
+                                       "follow the steps.", foreground="gray", width=1)
+            self.apply_msg.pack(side="bottom", fill="x", pady=(6, 0))
+            self.apply_msg.bind("<Configure>", lambda e: self.apply_msg.configure(wraplength=max(200, e.width - 4)))
+
+            title = "What will change" + ("  —  check the replacements and removals" if changes or removals
+                                          else "")
+            lf = ttk.LabelFrame(frm, text=title, padding=4)
+            lf.pack(side="top", fill="both", expand=True)
+            box, tv = scrolled_tree(lf, ("num", "channel", "gname", "current", "new"),
+                                    ("Ch #", "Channel", "Gracenote name", "Current ID", "New ID"),
+                                    (60, 240, 220, 90, 90), "new", selectmode="browse", height=6)
+            box.pack(fill="both", expand=True)
+            tv.tag_configure(CHANGE, background=ROW_COLORS[CHANGE], foreground="black")
+            tv.tag_configure(REMOVE, background=ROW_COLORS[REMOVE], foreground="black")
+            for r in removals + changes + [r for r in todo if r not in removals and r not in changes]:
+                ch = r["channel"]
+                tag = REMOVE if r.get("remove") else CHANGE if r["current"] else ""
+                tv.insert("", "end", tags=(tag,) if tag else (), values=(
+                    _fmt_num(ch.get("effective_channel_number") or ch.get("channel_number")),
+                    ch.get("effective_name") or ch.get("name") or "", (r["best"] or {}).get("name", ""),
+                    r["current"] or "-", "(remove)" if r.get("remove") else r["new_id"]))
+            top.bind("<Escape>", lambda e: top.destroy())
+            self.apply_verify.focus_set()
+
+        def _copy_again(self, text):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            if self.apply_alive():
+                self.apply_msg.configure(text="Copied again.", foreground="")
 
         def verify(self):
             """Re-read the playlist and confirm every copied ID is now in m3u-editor."""
+            if self.busy:
+                self.note("Still working, one moment…", warn=True)
+                return
             if not self.m3ue:
-                messagebox.showinfo("Not connected", "Press Connect & Match first.")
+                self.note("Connect first.", warn=True)
                 return
             todo = self.copied or [r for r in self.rows if r["write"]]
             if not todo:
-                messagebox.showinfo("Nothing to verify", "Copy some station IDs for m3u-editor first.")
+                self.note("Nothing to verify: copy some station IDs for m3u-editor first.", warn=True)
                 return
+            m3ue = self.m3ue
+            if self.apply_alive():
+                self.apply_msg.configure(text="Checking m3u-editor…", foreground="")
 
             def job(progress):
                 progress("Reading the playlist from m3u-editor...", 30)
-                live = {c["id"]: c for c in self.m3ue.load()}
-
-                def finish():
-                    ok, deleted, pending = 0, 0, []
-                    for r in todo:
-                        ch = live.get(r["channel"]["id"])
-                        want = "" if r.get("remove") else r["new_id"]
-                        if ch is None:
-                            r.update(status=DELETED, write=False, why="channel no longer in this playlist")
-                            deleted += 1
-                        elif (ch.get("effective_tvc_guide_stationid") or "") == want:
-                            if want:
-                                r.update(current=want, status=VERIFIED, write=False, why="verified in m3u-editor")
-                            else:
-                                r.update(current="", status=UNMATCHED, write=False, remove=False, why="ID removed")
-                            ok += 1
-                        elif not ch.get("in_output"):
-                            r.update(why="not in the playlist output, so it cannot be checked")
-                            pending.append(r)
-                        else:
-                            r.update(why=f"m3u-editor still shows '{ch.get('effective_tvc_guide_stationid') or 'nothing'}'")
-                            pending.append(r)
-                    self.copied = [r for r in self.copied if r in pending]
-                    self.prog["value"] = 100
-                    self.status.config(text=f"Verified {ok} of {len(todo)} station IDs."
-                                            + (f" {deleted} no longer in m3u-editor." if deleted else "")
-                                            + (f" {len(pending)} not applied yet." if pending else ""))
-                    self.refresh()
-                    self.save_session(True)
-                    if pending:
-                        names = "\n  ".join(r["channel"].get("effective_name") or "" for r in pending[:8])
-                        more = f"\n  ...and {len(pending) - 8} more" if len(pending) > 8 else ""
-                        messagebox.showwarning(
-                            "Not applied yet",
-                            f"{len(pending)} station IDs are not in m3u-editor yet. They are still ticked.\n  "
-                            f"{names}{more}\n\nCheck that the Apply Station IDs run finished (Extensions > "
-                            "Gracenote Station IDs > Run History), then press Verify again.")
-                return finish
+                live = {c["id"]: c for c in m3ue.load()}
+                return lambda: self.verified(todo, live)
 
             self._worker(job, "verify")
 
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except (AttributeError, OSError):
-            pass
-    root = tk.Tk()
-    App(root)
+        def verified(self, todo, live):
+            """Runs on the Tk thread with the playlist read back from m3u-editor."""
+            ok, deleted, pending = 0, 0, []
+            for r in todo:
+                ch = live.get(r["channel"]["id"])
+                want = "" if r.get("remove") else r["new_id"]
+                if ch is None:
+                    r.update(status=DELETED, write=False, why="channel no longer in this playlist")
+                    deleted += 1
+                elif (ch.get("effective_tvc_guide_stationid") or "") == want:
+                    if want:
+                        r.update(current=want, status=VERIFIED, write=False, why="verified in m3u-editor")
+                    else:
+                        r.update(current="", status=UNMATCHED, write=False, remove=False, why="ID removed",
+                                 reviewed=True)
+                    r["auto"] = {k: r[k] for k in ("status", "best", "new_id", "write", "why")}  # Reset = now
+                    ok += 1
+                elif not ch.get("in_output"):
+                    r.update(why="not in the playlist output, so it cannot be checked")
+                    pending.append(r)
+                else:
+                    r.update(why=f"m3u-editor still shows '{ch.get('effective_tvc_guide_stationid') or 'nothing'}'")
+                    pending.append(r)
+            self.copied = [r for r in self.copied if r in pending]
+            self.prog["value"] = 100
+            msg = (f"Verified {ok} of {len(todo)} station IDs."
+                   + (f" {deleted} no longer in m3u-editor." if deleted else "")
+                   + (f" {len(pending)} not applied yet (still ticked): check that the plugin's Apply "
+                      "Station IDs run finished (Extensions > Gracenote Station IDs > Run History), then "
+                      "Verify again." if pending else ""))
+            self.note(msg, warn=bool(pending))
+            ids = {id(r) for r in todo}
+            self.update_rows([i for i, r in enumerate(self.rows) if id(r) in ids])
+            self.show_detail()
+            self.save_session(True)
+            if self.apply_alive():
+                self.apply_msg.configure(text=msg + ("" if pending else "  All done; you can close this window."),
+                                         foreground="#c00000" if pending else "#006000")
+
+    app = App(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+    if aqua:
+        root.createcommand("::tk::mac::Quit", app.on_close)
     root.mainloop()
 
 
