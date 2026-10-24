@@ -993,10 +993,32 @@ every shortcut.
   to an `undo_<date>.json` file. **Undo a write…** lists them by date with the channels they
   touched, puts back the one you pick, and reloads.
 
-Files are kept in `~/.dispatcharr_backup_streams/` (Windows:
-`%USERPROFILE%\.dispatcharr_backup_streams\`): `settings.json` (address and API key, readable only
-by your user account), `session.json` (autosaved work), `window.json` (window size and layout),
-`undo_*.json` and `logs/backup_streams.log`. **File > Open data and log folder** opens it.
+### Where data is stored
+
+The app keeps everything in one folder in your home directory:
+
+| System | Folder |
+|---|---|
+| macOS and Linux | `~/.dispatcharr_backup_streams/` |
+| Windows | `%USERPROFILE%\.dispatcharr_backup_streams\` |
+
+The folder name starts with a dot, so it is hidden by default on macOS and Linux. Open it with
+**File > Open data and log folder**, with `open ~/.dispatcharr_backup_streams` (macOS) or
+`xdg-open ~/.dispatcharr_backup_streams` (Linux), or press Cmd-Shift-. in Finder. On Windows,
+paste the path into Explorer's address bar.
+
+| File | Contents |
+|---|---|
+| `settings.json` | Dispatcharr address, API key, username (never the password) and the backup-stream limit. Readable only by your user account. |
+| `session.json` | Autosaved work that hasn't been written yet: for each channel, the picked and removed streams, streams added by hand, skips and reviews. Used for the restore prompt. Readable only by your user account. |
+| `window.json` | Window size and the position of the panel dividers. |
+| `undo_<date>-<time>.json` | One per **Write**: the Dispatcharr address and, for every channel that write changed, its name and the stream list it had before. **Undo a write…** reads these. Kept until you delete them. |
+| `logs/backup_streams.log` | Log of connects, matching, writes and undos. Rotates at 2 MB and keeps 3 old files. Passwords and API keys are never logged. |
+
+Nothing is stored anywhere else, and nothing is sent anywhere except your Dispatcharr server. The
+API key is saved so you don't have to paste it every time; to make the app forget it, delete
+`settings.json` while the app is closed. Deleting the whole folder resets the app and removes
+your undo history; nothing in Dispatcharr is affected.
 
 ### Adding a backup by hand
 
