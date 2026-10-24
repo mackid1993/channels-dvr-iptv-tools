@@ -9,10 +9,11 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   Gracenote data your own Channels DVR server already has access to. Once your channels carry the
   right station IDs, Channels DVR uses its Gracenote guide for them (two weeks of listings,
   artwork and logos) instead of your provider's EPG.
-- **A Dispatcharr stream profile for HLS providers** that keeps live channels playing through
-  provider hiccups, stalls and channel restarts, and fails over to a channel's backup streams
-  without stalling. It is copied and pasted into Dispatcharr from
-  [this README](#dispatcharr-stream-profile-for-hls-providers); there is nothing to install.
+- **A Dispatcharr stream profile built specifically for Channels DVR.** It holds the buffer inside
+  Dispatcharr, feeds Channels DVR at a steady real-time pace, gives every device on a shared
+  Channels DVR tuner a head start, and fails over to a channel's backup streams without
+  pausing. It needs an HLS provider. It is copied and pasted into Dispatcharr from
+  [this README](#dispatcharr-stream-profile-for-channels-dvr); there is nothing to install.
 - **A backup streams app** that finds other feeds of each channel and adds them to your Dispatcharr
   channels as backups in bulk, so the stream profile has somewhere to fail over to.
 
@@ -24,7 +25,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 | [`m3u_editor_stationid_matcher.py`](m3u_editor_stationid_matcher.py) | Desktop app. Same matching; applies the IDs through a small m3u-editor plugin that the app exports for you. | m3u-editor |
 | [`plugin/`](plugin) | Source of that m3u-editor plugin, for reading. The app builds the installable zip. | m3u-editor |
 | [`dispatcharr_backup_streams.py`](dispatcharr_backup_streams.py) | Desktop app. Finds other feeds of each channel and adds them as backup streams through Dispatcharr's API. | Dispatcharr |
-| [Stream profile](#dispatcharr-stream-profile-for-hls-providers) (in this README) | A Dispatcharr stream profile that buffers, resumes, retries and fails over HLS streams. | Dispatcharr |
+| [Stream profile](#dispatcharr-stream-profile-for-channels-dvr) (in this README) | A Dispatcharr stream profile for Channels DVR: holds the buffer, paces the stream, sizes the head start for the devices watching, and fails over HLS streams. | Dispatcharr + Channels DVR |
 
 The two station ID apps match channels the same way. They differ only in where the channels come from and
 how the IDs are saved. Use the app for whichever manager you run.
@@ -47,7 +48,7 @@ how the IDs are saved. Use the app for whichever manager you run.
 
 The matcher apps run on your computer. They talk to your Channels DVR server for Gracenote lineup
 data, and to your Dispatcharr or m3u-editor server for the channel list. Nothing goes anywhere
-else. The stream profile runs inside Dispatcharr and only talks to your provider.
+else. The stream profile runs inside Dispatcharr and talks to your provider and your Channels DVR server.
 
 ## Dispatcharr or m3u-editor?
 
@@ -56,7 +57,7 @@ If you already run one, use it; both work with Channels DVR. If you're choosing:
 | | Dispatcharr | m3u-editor |
 |---|---|---|
 | Saving Gracenote IDs from the matcher | Written directly through Dispatcharr's API | Pasted into a plugin action (m3u-editor's API can't set them) |
-| HLS provider hiccups | The built-in stream profiles give up after 3 quick reconnects. Use the [stream profile](#dispatcharr-stream-profile-for-hls-providers) in this README. | Passes the provider's HLS through; Channels DVR fetches the next segment |
+| HLS provider hiccups | The built-in stream profiles give up after 3 quick reconnects. Use the [stream profile](#dispatcharr-stream-profile-for-channels-dvr) in this README. | Passes the provider's HLS through; Channels DVR fetches the next segment |
 | Adding backup streams in bulk | The [backup streams app](#backup-streams-app) | By hand, or m3u-editor's auto-merge |
 | Provider that only sends MPEG-TS | Built-in proxy buffers and sends keepalives through stalls | Works, with no special TS buffering |
 | Backup streams per channel | Automatic switching | Failover channels, set by hand or with auto-merge |
@@ -290,7 +291,12 @@ nothing in Dispatcharr or m3u-editor is affected.
 - m3u-editor app: IDs are applied by pasting into the plugin's action, because m3u-editor has
   no API for it and plugin actions can only be started from its web page.
 
-## Dispatcharr stream profile for HLS providers
+## Dispatcharr stream profile for Channels DVR
+
+**This profile is built specifically for Channels DVR watching through Dispatcharr.** It works out
+which Channels DVR channel each stream is, asks Channels DVR how many devices are watching it, and
+sizes the buffer for that. Other players still get a steady stream, but the viewer buffer only
+works with Channels DVR. If you don't use Channels DVR, use one of Dispatcharr's built-in profiles.
 
 ### Why
 
@@ -300,61 +306,85 @@ replaces a dead channel with a black "offline" placeholder. Dispatcharr's built-
 start playback right at the live edge and give up after three quick reconnects, so those problems
 show up in Channels DVR as buffering, a black screen or a dropped channel.
 
-This profile replaces the stream fetcher with a small Python program that runs inside Dispatcharr:
+Channels DVR also shares one tuner between every device watching the same channel. A device that
+joins later starts at the newest video Channels DVR has, so a cushion built up in the first
+player doesn't help the second one.
 
-- **Starts with a cushion and a hidden reserve, worked out from the stream.** It joins about 45
-  seconds behind live (counted in the stream's own segment length, never deeper than the
-  provider's playlist holds), hands about 30 seconds of that to Dispatcharr straight away, and
-  keeps the rest as a private reserve that it releases at real-time speed. When the provider
-  publishes a segment late, the reserve covers the wait, so the output never stops and the
-  client's cushion doesn't drain. When the provider catches up, the reserve refills at download
-  speed. There are no settings: segment length and timings come from each playlist.
-- **Refills the cushion after a stall.** It remembers the last segment it delivered. When the
-  provider comes back, it resumes at the next segment and downloads everything it missed back to
-  back. Nothing is replayed and nothing is skipped, as long as the missed segments are still in
-  the provider's playlist (usually about a minute).
-- **Fails over to the channel's backup streams on its own, without rewinding.** It switches to
-  the next stream on the channel at once if the feed turns into the provider's offline
-  placeholder, and when the feed has delivered no new video for about as long as its hidden
-  reserve can cover (this includes a playlist that keeps updating while its segments fail) (about 20 seconds on 10-second segments; brief errors are ridden out on the same feed,
-  and a stuck playlist is re-checked first). The backup is joined only as far back as the outage
-  lasted, so the program continues instead of replaying; if the first backup is dead too, the
-  outage keeps counting until a working stream is reached. If the main feed is already dead
-  when you tune in, the backup gets the normal full cushion. The connection to Dispatcharr and
-  Channels DVR stays open and timestamps continue where the old feed stopped. Add backup streams
+### How it works
+
+The profile replaces Dispatcharr's stream fetcher with a small Python program that runs inside
+Dispatcharr. It holds the cushion itself and feeds Channels DVR at a steady pace, the way an HDMI
+encoder does:
+
+- **The reserve lives in the profile, not in the players.** It joins the provider's whole
+  playlist window (about 60 seconds behind live on 10-second segments) and keeps almost all of
+  it as a private reserve. When the provider publishes late, the reserve keeps video flowing to
+  every device at once. When the provider catches up, the reserve refills at download speed.
+- **Paced by video timestamps.** Video leaves the profile at exactly real time, timed by each
+  frame's timestamp rather than by bytes, so players receive it smoothly and every device on a
+  shared tuner gets the same stream.
+- **A small head start for the players, sized for Channels DVR.** One viewer gets about 1 second
+  ahead (more on low-bitrate channels, so Dispatcharr's ~256 KB chunks never leave the player
+  short). Each extra Channels DVR device watching the same channel adds 5 seconds, sent to every
+  device on that tuner, so a device that joins late still gets a cushion. The extra lead is kept
+  until the channel stops, so a device leaving never drains the others. The reserve never drops
+  below about 20 seconds, however many devices join.
+- **Finds the channel in Channels DVR on its own.** It finds your Channels DVR server from
+  Dispatcharr's client list (the client whose user agent is Channels DVR), finds the Channels DVR
+  source whose URL is a Dispatcharr M3U output (`/output/m3u/...`), and locates this channel in
+  that playlist by its Dispatcharr UUID. Channels DVR lists an M3U source's channels in playlist
+  order, so the same position gives the Channels DVR channel number. It checks that the counts and
+  names line up first. If the source is out of date (you changed channels in Dispatcharr since
+  Channels DVR last refreshed it), the profile refreshes that source in Channels DVR, the same
+  as the **Refresh** button, and checks again. Playback never waits for this. Every Dispatcharr
+  playlist you've added to Channels DVR is handled the same way.
+- **Fails over to the channel's backup streams without rewinding or pausing.** If the feed turns
+  into the provider's offline placeholder, or delivers no new video for about 30 seconds on
+  10-second segments, it switches to the next stream on the channel. The backup is joined only as
+  far back as the outage lasted, timestamps continue where the old feed stopped, and the new
+  remuxer is started before the old one finishes, so the output doesn't pause. Add backup streams
   with [`dispatcharr_backup_streams.py`](#backup-streams-app).
 - **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
   (and never plays the black placeholder) until the provider comes back.
-- **Tells a lagging server from a channel restart.** A server that is slightly behind is waited
-  out instead of replayed; a real channel restart is rejoined without the timeline jumping back.
-- **Survives Dispatcharr's own restarts.** If Dispatcharr's health check restarts the stream, the
-  new copy picks up at the exact point the old one stopped sending, with its reserve intact (it
-  remembers the position per channel, so this works even when Dispatcharr reconnects on a
-  different provider login).
-- **Backs off politely.** Connection-limit responses (503, 509, 429) wait longer and respect
-  `Retry-After` (up to 30 seconds).
-- **One continuous stream, no re-encoding.** A single `ffmpeg -c copy` remuxer delivers MPEG-TS to
-  Dispatcharr, so quality and CPU use are unchanged. AES-128 encrypted streams, fMP4 segments and
-  byte-range playlists are supported too.
+- **Keeps Dispatcharr from restarting the stream.** Whenever the output would go quiet for 3
+  seconds, it sends MPEG-TS null packets, which every player discards, so Dispatcharr's
+  "no data" health check doesn't kill the stream. They stop if the profile itself gets stuck,
+  so Dispatcharr can still restart a wedged stream, and the new copy resumes where the old one
+  stopped.
+- **Tells a lagging server from a channel restart**, and **backs off politely** on
+  connection-limit responses (503, 509, 429, honouring `Retry-After` up to 30 seconds).
+- **No re-encoding.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
+  unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are supported.
 
-You watch about 45 seconds behind live on providers with 10-second segments (less on providers whose playlists are short).
+You watch about 60 seconds behind live on providers with 10-second segments (less on providers
+whose playlists are short).
 
 ### Requirements
 
-- **Dispatcharr 0.32 or newer** (tested on 0.32.0). The profile uses Python, the `requests` and
-  `psycopg` modules and `ffmpeg`, which are all part of Dispatcharr's Docker image. Nothing is
-  installed. It reads each channel's backup stream list from Dispatcharr's own database, using the
-  database settings Dispatcharr already passes to its stream processes.
+- **Channels DVR**, with Dispatcharr added as a **Custom Channels** M3U source using Dispatcharr's
+  M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**.
+  Dispatcharr must be able to reach the Channels DVR server on port 8089.
+- **Dispatcharr 0.32 or newer** (tested on 0.32.0). The profile uses Python, the `requests`,
+  `psycopg` and `redis` modules and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is
+  installed. It reads each channel's UUID and backup streams from Dispatcharr's own database, and
+  its client list from Dispatcharr's Redis, using settings Dispatcharr already passes to its
+  stream processes.
 - **Your provider's stream URLs must be HLS**, ending in `.m3u8`. Check under **Streams** in
   Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
   HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
   fails with `response is not an m3u8 playlist` in the Dispatcharr log; keep those channels on a
   built-in profile.
 
+### What it sends to Channels DVR
+
+The profile only reads from Channels DVR (`/settings`, `/devices/<source>/channels` and
+`/dvr/activity`), with one exception: when a Dispatcharr source in Channels DVR is out of date, it
+asks Channels DVR to refresh that source.
+
 ### Create the profile
 
 1. In Dispatcharr, open **Settings > Stream Profiles** and press **Add Stream Profile**.
-2. **Name:** anything you like, for example `HLS Resume`.
+2. **Name:** anything you like, for example `Channels DVR HLS`.
 3. **Command:** type exactly:
 
    ```
@@ -370,8 +400,7 @@ You watch about 45 seconds behind live on providers with 10-second segments (les
      the Parameters box safely.
 5. Press **Save**.
 
-If you used an earlier version of this profile, replace its Parameters with the new block. The new
-one ends with `{channelId}`; without it, failover to backup streams can't work.
+If you used an earlier version of this profile, replace its Parameters with the new block.
 
 ### Turn it on
 
@@ -387,18 +416,21 @@ old stream, then tune back.
 
 - **Dispatcharr:** **Settings > Proxy Settings > Buffering Timeout** of at least **30** seconds, so
   Dispatcharr's own stream switching doesn't step in before the profile's failover.
-- **Channels DVR:** the Dispatcharr source should use **Stream Format: MPEG-TS**. The profile always
-  delivers MPEG-TS to Dispatcharr, whatever the provider sends.
+- **Channels DVR:** keep **tuner sharing** on. The profile is built around it.
 
 ### Check that it's working
 
 Tune a channel, then look at Dispatcharr's log (for Docker, `docker logs dispatcharr`). The
 running process shows up as `python -u -c import os,sys,...`. Messages from the profile start
-with `[hlsloop]`:
+with `[hlsloop stream]`:
 
 | Message | Meaning |
 |---|---|
-| `catching up N segments` | The provider stalled; the profile downloaded what it missed and refilled the cushion. |
+| `viewer buffer: this stream is Channels DVR <source> ch N` | The profile found this channel in Channels DVR. |
+| `viewer buffer: N viewers on Channels DVR ch N, client lead raised to Ns` | Another device joined; every device on the tuner got the extra head start. |
+| `viewer buffer: Channels DVR source <source> is out of date, refreshing it` | The Channels DVR source didn't match Dispatcharr's playlist, so the profile refreshed it. |
+| `viewer buffer: off ...` | The viewer buffer is off for this stream (the reason follows); playback is unaffected and uses the single-viewer head start. |
+| `catching up N segments` | The provider stalled; the profile downloaded what it missed and refilled the reserve. |
 | `playlist stale Ns, re-resolving` | The playlist stopped updating; the profile requested it again. |
 | `edge server is behind, waiting for it to catch up` | A provider server was a few segments behind; nothing was replayed. |
 | `provider restarted the channel, rejoining` | The provider restarted the channel; the profile rejoined it. |
@@ -410,24 +442,21 @@ with `[hlsloop]`:
 | `playlist error (...); retry N in Ns` | A request failed and is being retried. |
 | `skipped segment N` | A segment could not be downloaded in time and was skipped so playback could continue. |
 
-Because the profile releases video at a steady real-time pace, Dispatcharr's
-`Stream unhealthy - no data for 10s` warning should no longer appear for streams using it. If it
-does, the provider went quiet for longer than the profile's reserve.
+Dispatcharr's `Stream unhealthy - no data for 10s` warning should not appear for streams using
+this profile.
 
 ### What it can't fix
 
 - **The program can skip or repeat up to one segment when it fails over.** Two feeds of the same
   channel are separate encodes that run at different delays behind live, and providers don't send
-  the wall-clock time needed to line them up. The switch itself is smooth (no stall or rebuffer),
-  but the program continues from wherever the backup feed is.
+  the wall-clock time needed to line them up. The switch itself doesn't pause, but the program
+  continues from wherever the backup feed is.
 - **Feeds with a different resolution or codec** can cause a brief glitch on the client at a
   failover while its decoder resets.
-- **A late publish longer than about 25 seconds** on a 10-second-segment provider uses up the
-  reserve and then the client's cushion. Providers with short playlists or short segments get a
-  smaller reserve.
-- **A provider outage longer than the playlist window** (usually about a minute) on a channel with
-  no backup. The picture freezes; when the provider comes back, the profile recovers on its own,
-  but video from the outage is lost.
+- **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
+  when the provider comes back, the profile recovers on its own, but video from the outage is lost.
+- **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
+  head start.
 - **A bad feed that keeps running**, for example audio out of sync. The profile can't detect it;
   use another stream for that channel.
 - **Connection limits.** Providers often count a stream as active for a short time after the last
@@ -445,19 +474,50 @@ retune. You can delete the profile afterwards.
 -u -c 'import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found",file=sys.stderr);sys.exit(1)
-src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else ""
+src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1
-def log(m):print("[hlsloop]",m,file=sys.stderr,flush=True)
+mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;nv=1;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic()
+def log(m):print("[hlsloop stream]",m,file=sys.stderr,flush=True)
 ff=None;sig=None;cmap=None;off=0.0
 def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
- if ff and ff.poll() is None:
-  try:ff.stdin.close();ff.wait(5)
-  except Exception:ff.kill()
- ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE)
+ old=ff
+ ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE,stdout=sp.PIPE)
+ with fql:fq.append(ff)
+ if old:
+  shut[old.pid]=mono()
+  try:old.stdin.close()
+  except Exception:pass
+NUL=(b"\x47\x1f\xff\x10"+b"\xff"*184)*7
+def pump():
+ ob=0;lw=mono()
+ while True:
+  with fql:p=fq[0] if fq else None;more=len(fq)>1
+  if p is None:time.sleep(0.05);continue
+  r,_,_=select.select([p.stdout],[],[],0.5)
+  if not r and mono()-lw>3 and not ob%188 and mono()-wb<10:
+   try:os.write(1,NUL);lw=mono()
+   except OSError:bye()
+  if not r:
+   if more and mono()-shut.get(p.pid,mono())>5:
+    try:p.kill()
+    except Exception:pass
+   elif more or p.poll() is None:continue
+  b=os.read(p.stdout.fileno(),65536) if r else b""
+  if not b:
+   if more:
+    with fql:fq.popleft()
+    try:p.wait(1)
+    except Exception:pass
+    shut.pop(p.pid,None)
+   elif p.poll() is not None:time.sleep(0.05)
+   continue
+  try:
+   while b:n=os.write(1,b);b=b[n:];ob+=n
+   lw=mono()
+  except OSError:bye()
 def gone():
  try:
   pl=select.poll();pl.register(1,select.POLLOUT)
@@ -523,13 +583,13 @@ st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;nv=max(1,int(j.get("nv",1)));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"nv":nv,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -563,26 +623,112 @@ def handoff(why):
  cur=nxt;gap=(gap+mono()-got) if gap is not None else ((mono()-got) if last is not None else None);media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
 def bye():
  global run
- run=0;save();os._exit(0)
-for g in (15,2,1):signal.signal(g,lambda*a:(ff and ff.kill(),os._exit(0)))
+ run=0;save();killall();os._exit(0)
+def killall():
+ with fql:ps=list(fq)
+ for p in ps:
+  try:p.kill()
+  except Exception:pass
+for g in (15,2,1):signal.signal(g,lambda*a:(killall(),os._exit(0)))
 if rcur:cur=rcur
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
 media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0;ph=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
 def join(segs):
  global dep
- n=max(1,min(max(3,int(-(-45//max(tgt,1)))),len(segs)-1));dep=n*tgt;return segs[-n:]
+ n=max(1,min(max(3,int(-(-60//max(tgt,1)))),len(segs)));dep=n*tgt;return segs[-n:]
+def clcap():
+ dp=dep or 3*tgt
+ return max(min(CL,dp*2/3),dp-2*tgt)
 def cushlim():
  dp=dep or 3*tgt
- return max(min(3*tgt,dp-min(30,dp*2/3)),2*tgt)
+ return max(min(3*tgt,dp-min(CL+JB*(nv-1),clcap())),2*tgt)
+def watch():
+ global nv
+ if not chid.isdigit():return
+ e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set()
+ def say(k,m):
+  if k not in said:said.add(k);log("viewer buffer: "+m)
+ try:
+  import psycopg
+  with psycopg.connect(dbname=e("POSTGRES_DB","dispatcharr"),user=e("POSTGRES_USER","dispatch"),password=e("POSTGRES_PASSWORD",""),host=e("POSTGRES_HOST","localhost"),port=int(e("POSTGRES_PORT","5432")),connect_timeout=3) as c:
+   uid=str(c.execute("select uuid from dispatcharr_channels_channel where id=%s",(int(chid),)).fetchone()[0])
+ except Exception as x:say("db","off (could not read this channel id: %s)"%x);return
+ def nm(l):
+  x=re.sub(r"\"[^\"]*\"","",l);return x.split(",",1)[1].strip() if "," in x else ""
+ while run:
+  try:
+   if not base:
+    import redis
+    rd=redis.Redis(host=e("REDIS_HOST","localhost"),port=int(e("REDIS_PORT","6379")),db=int(e("REDIS_DB","0")),password=e("REDIS_PASSWORD") or None,socket_timeout=2)
+    for m in rd.smembers("live:channel:%s:clients"%uid):
+     h=rd.hgetall("live:channel:%s:clients:%s"%(uid,m.decode()))
+     if b"channels-dvr" in h.get(b"user_agent",b"").lower():base="http://%s:8089"%h[b"ip_address"].decode();break
+    if not base:
+     if mono()-t0>120:say("nocd","off (no Channels DVR client on this stream)");return
+     time.sleep(5);continue
+   if mono()-tmap>300:
+    tmap=mono();num=dev=None;st=w.get(base+"/settings",timeout=5).json()
+    for k,v in st.items():
+     mm=re.fullmatch(r"m3u\.src\.(.+)\.url",k)
+     if not mm or "/output/m3u" not in str(v):continue
+     t=w.get(v,timeout=20).text.splitlines()
+     ent=[(nm(t[i]),t[i+1].strip()) for i in range(len(t)-1) if t[i].startswith("#EXTINF")]
+     hit=[i for i,(n,x) in enumerate(ent) if uid in x]
+     if not hit:continue
+     d="M3U-"+mm.group(1)
+     for tr in range(6):
+      cl=w.get(base+"/devices/%s/channels"%d,timeout=10).json()
+      if len(cl)==len(ent) and all(str(c.get("GuideName","")).strip()==n for c,(n,x) in zip(cl,ent)):break
+      if tr==0:log("viewer buffer: Channels DVR source %s is out of date, refreshing it"%d);w.post(base+"/providers/m3u/sources/%s/refresh"%up.quote(mm.group(1)),timeout=30)
+      time.sleep(1)
+     else:say("drift"+d,"Channels DVR source %s still does not match the playlist after a refresh"%d);continue
+     dev=d;num=str(cl[hit[0]]["GuideNumber"]);say("map"+dev+num,"this stream is Channels DVR %s ch %s"%(dev,num));break
+    if num is None:say("nomap","off for now (this channel is not in a Channels DVR source that matches the playlist)")
+   if num is None:time.sleep(30);continue
+   k=0
+   for x in (w.get(base+"/dvr/activity",timeout=3).json().get("streams") or []):
+    tu=x.get("tuner") or {}
+    if tu.get("device_id")==dev and str(tu.get("channel"))==num:k=max(k,int(tu.get("readers") or 1))
+   if k:seen=mono()
+   elif seen is None and mono()-t0>90:say("unseen","off (ch %s never showed up as playing in Channels DVR)"%num);return
+   if k and k>nv:
+    nv=k;log("viewer buffer: %d viewers on Channels DVR ch %s, client lead raised to %.0fs (kept until the channel stops)"%(k,num,CL+JB*(nv-1)))
+   fails=0
+  except Exception as x:
+   fails+=1
+   if fails==3:log("viewer buffer: Channels DVR not reachable (%s)"%str(x)[:80])
+   if not base and mono()-t0>120:return
+  time.sleep(2)
+def tix(d):
+ out=[];b=None;m=0.0
+ for i in range(0,len(d)-187,188):
+  p=d[i:i+188]
+  if p[0]!=0x47 or not p[1]&64:continue
+  af=(p[3]>>4)&3
+  if af==2:continue
+  o=5+p[4] if af==3 else 4
+  if o+14<=188 and p[o:o+3]==bytes([0,0,1]) and 0xE0<=p[o+3]<=0xEF and p[o+7]&0x80:
+   q=p[o+9:o+14];t=(((q[0]>>1)&7)<<30|q[1]<<22|(q[2]>>1)<<15|q[3]<<7|q[4]>>1)/90000.0
+   if b is None:b=t
+   m=max(m,(t-b+WR/2)%WR-WR/2);out.append((i,m))
+ return out
+def tpos(ix,x,dur):
+ if x>=ix[-1][0] if ix else True:return dur if not ix or x>=ix[-1][0]+188 else min(ix[-1][1],dur)
+ lo,hi=0,len(ix)-1
+ while lo<hi:
+  md=(lo+hi+1)//2
+  if ix[md][0]<=x:lo=md
+  else:hi=md-1
+ return min(ix[lo][1],dur) if ix[lo][0]<=x else 0.0
 def enq(it):
  with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
 def writer():
- global wlast,wpart,oend,off,wlead
+ global wlast,wpart,oend,off,wlead,wb
  lead=wlead;t=mono()
  while run:
   try:
-   now=mono();lead=max(lead-(now-t),0.0);t=now;wlead=lead
+   now=mono();wb=now;lead=max(lead-(now-t),-3.0);t=now;wlead=lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
    with ql:
     it=Q[0] if Q else None;qs=Qs[0]
@@ -592,12 +738,16 @@ def writer():
     with ql:Q.popleft()
     if it[0]=="remux":
      if it[3] is not None:off=it[3]
-     remux(it[1])
+     remux(it[1]);lead=max(lead-3.0,-3.0)
     else:put(it[1])
     continue
-   dp=dep or 3*tgt;cl=min(30,dp*2/3)
+   dp=dep or 3*tgt;cl=min(max(CL,255868*it[2]/max(len(it[1]),1)+0.5)+JB*(nv-1),clcap())
    if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
-   d=it[1];k=min(65424,max(len(d)//40,188),len(d)-it[5]);cd=it[2]*k/max(len(d),1)
+   d=it[1]
+   if len(it)<7:it.append(tix(d))
+   k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
+   cd=(it[2] if e>=len(d) else tpos(it[6],e,it[2]))-tpos(it[6],it[5],it[2]) if it[6] else it[2]*k/max(len(d),1)
+   cd=max(cd,0.0)
    put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd
    with ql:Qs[0]-=cd
    if it[5]>=len(d):
@@ -607,7 +757,9 @@ def writer():
    save()
   except Exception as e:log("writer error (%s)"%e);time.sleep(1)
 remux()
+threading.Thread(target=pump,daemon=True).start()
 threading.Thread(target=writer,daemon=True).start()
+threading.Thread(target=watch,daemon=True).start()
 while not gone():
  try:
   r=s.get(media or cur,timeout=(5,10));r.raise_for_status()
@@ -697,7 +849,7 @@ bye()' {streamUrl} {userAgent} {channelId}
 ## Backup streams app
 
 `dispatcharr_backup_streams.py` adds backup streams to your Dispatcharr channels in bulk, so the
-[stream profile](#dispatcharr-stream-profile-for-hls-providers) (or Dispatcharr's own stream
+[stream profile](#dispatcharr-stream-profile-for-channels-dvr) (or Dispatcharr's own stream
 switching) has another feed to move to when one dies. It finds other feeds of the same channel
 among all your streams, shows them in a table for you to review, and writes the ones you approve
 through Dispatcharr's API.
