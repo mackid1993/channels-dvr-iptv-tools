@@ -300,11 +300,12 @@ This profile replaces the stream fetcher with a small Python program that runs i
   the provider's playlist (usually about a minute).
 - **Fails over to the channel's backup streams on its own, without rewinding.** It switches to
   the next stream on the channel at once if the feed turns into the provider's offline
-  placeholder, and when the feed has produced no new video for about as long as its hidden reserve
-  can cover (about 20 seconds on 10-second segments; brief errors are ridden out on the same feed,
+  placeholder, and when the feed has delivered no new video for about as long as its hidden
+  reserve can cover (this includes a playlist that keeps updating while its segments fail) (about 20 seconds on 10-second segments; brief errors are ridden out on the same feed,
   and a stuck playlist is re-checked first). The backup is joined only as far back as the outage
   lasted, so the program continues instead of replaying; if the first backup is dead too, the
-  outage keeps counting until a working stream is reached. The connection to Dispatcharr and
+  outage keeps counting until a working stream is reached. If the main feed is already dead
+  when you tune in, the backup gets the normal full cushion. The connection to Dispatcharr and
   Channels DVR stays open and timestamps continue where the old feed stopped. Add backup streams
   with [`dispatcharr_backup_streams.py`](#backup-streams-app).
 - **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
@@ -540,7 +541,7 @@ def handoff(why):
   stalled=True;got=mono();return
  nxt=fl[(fl.index(cur)+1)%len(fl)] if cur in fl else fl[1]
  log(why+"; switching to stream %d of %d"%(fl.index(nxt)+1,len(fl)))
- cur=nxt;gap=(gap or 0)+mono()-got;media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
+ cur=nxt;gap=(gap+mono()-got) if gap is not None else ((mono()-got) if last is not None else None);media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono();save()
 def bye():
  global run
  run=0;save();os._exit(0)
@@ -597,12 +598,12 @@ while not gone():
   if v:media=up.urljoin(r.url,max(v)[1]);continue
   if "#EXT-X-ENDLIST" in L:
    handoff("provider is serving an offline placeholder")
-   if stalled:time.sleep(5)
+   time.sleep(5 if stalled else 1)
    continue
   media=r.url;seq=0;hasseq=False;tgt=10;segs=[];key=None;mp=None;br=None;pe={};dur=0.0
   for x in L:
    if x.startswith("#EXT-X-MEDIA-SEQUENCE:"):seq=int(x[22:]);hasseq=True
-   elif x.startswith("#EXT-X-TARGETDURATION:"):tgt=float(x[22:])
+   elif x.startswith("#EXT-X-TARGETDURATION:"):tgt=max(float(x[22:]),1)
    elif x.startswith("#EXT-X-KEY:"):a=attrs(x);key=None if a.get("METHOD","NONE")=="NONE" else (a.get("METHOD"),up.urljoin(r.url,a.get("URI","")),a.get("IV"))
    elif x.startswith("#EXT-X-MAP:"):mp=up.urljoin(r.url,attrs(x)["URI"])
    elif x.startswith("#EXT-X-BYTERANGE:"):br=x[17:]
@@ -621,18 +622,19 @@ while not gone():
    if len(ids)>300:ids={k:v for k,v in ids.items() if v>nid-100}
    if rseen:last=max([q["n"] for q in segs if q["p"] in rseen],default=None)
   rseen=None;err=0;e0=None;dead=0;w=min(max(tgt/2,1),5)
-  if last is None:new=join(segs) if gap is None else segs[-max(1,min(len(segs),int(-(-gap//max(tgt,1))))):];gap=None;lag=None
+  if last is None:new=join(segs) if gap is None else segs[-max(1,min(len(segs),int(-(-gap//max(tgt,1))))):];lag=None
   elif segs[-1]["n"]<last:
    if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=join(segs);lag=None;pend=True
    else:
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
-  else:new=[q for q in segs if q["n"]>last];lag=None
+  else:new=[q for q in segs if q["n"]>last];lag=None;gap=None
   lim=cushlim()
-  if new:stalled=False
-  if new:fresh=got=mono()
-  elif mono()-got>lim:handoff("no new video for %ds"%(mono()-got))
-  elif mono()-fresh>0.6*lim:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
+  if new:fresh=mono()
+  if mono()-got>lim:
+   handoff("no new video for %ds"%(mono()-got))
+   if not stalled:continue
+  elif not new and mono()-fresh>0.6*lim:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
   if not new and mono()-fresh>0.8*tgt:w=min(w,max(tgt/10,0.5))
   if last is not None and len(new)>1:log("catching up %d segments"%len(new))
   for q in new:
@@ -658,7 +660,7 @@ while not gone():
    o=0
    if rpart and rpart[0]==n and rpart[1]<len(d):o=rpart[1]-rpart[1]%188;rpart=None
    enq(["seg",d,q["d"] or tgt,n,p0,o])
-   last=n;bad.discard(n);seen.append(q["p"])
+   last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   time.sleep(w)
  except Exception as e:
