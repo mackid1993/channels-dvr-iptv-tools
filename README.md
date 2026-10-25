@@ -1241,8 +1241,8 @@ while not gone():
    p0=pts0(d)
    if PSK is not None and 3<abs(PSK)<WR-60:
     nsk+=1
-    if nsk==1:log("audio and video are %.1fs apart in this feed; holding it back"%PSK)
-    if nsk>=2 and not stalled:
+    if nsk==1:log("audio and video are %.1fs apart in this feed; %s"%(PSK,"holding it back" if qend is not None else "passing it through (nothing playing yet)"))
+    if nsk>=2 and mono()-lpr>=30:
      handoff("audio and video are %.0fs apart in this feed"%abs(PSK))
      if not stalled:nsk=0;break
     if nsk*(q["d"] or tgt)<(30 if qend is not None else 0.1):last=n;bad.discard(n);seen.append(q["p"]);continue
@@ -1307,7 +1307,8 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   lands too far behind to catch up in time, it replays rather than freezing.
 - **Switching is a last resort, as in the HLS profile.** It switches to the next backup after 60 s
   without new video (sooner if its reserve is about to run out), on a feed whose audio and video
-  are more than 3 seconds apart (never sent to the player), on the offline placeholder, on a feed with no decodable video, or on a feed
+  are more than 3 seconds apart (held back; if no backup works it is shown after about 30 seconds,
+  as in the HLS profile), on the offline placeholder, on a feed with no decodable video, or on a feed
   that has stayed slower than real time for 5 minutes. Refused or failed connections are retried
   on the same feed. A backup is joined only as deep as the outage lasted.
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
@@ -1848,7 +1849,7 @@ def conn(r):
     continue
    dp,ts=dec
    va=[x for x in (pests(p) for p in pre) if x];fv_=next((x[1] for x in va if 0xE0<=x[0]<=0xEF),None);fa_=next((x[1] for x in va if 0xC0<=x[0]<=0xDF),None)
-   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60:raise ValueError("audio and video are %.0fs apart in this feed"%abs(dif(fv_,fa_)))
+   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60 and not (stalled and mono()-lv>30):raise ValueError("audio and video are %.0fs apart in this feed"%abs(dif(fv_,fa_)))
    if prim is None or dp!=prim:prim=dp
    pv=any(pests(p) and 0xE0<=pests(p)[0]<=0xEF for p in pre if (((p[1]&31)<<8)|p[2])==prim)
    ref=last.get(prim)
