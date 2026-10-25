@@ -949,7 +949,7 @@ def handoff(why,depth=None,fl=None):
  if len(fl)<2:
   if not stalled:ost=got;log(why+"; no backup stream on this channel, so staying on this feed")
   stalled=True;got=mono();return
- if stalled and mono()-lpr<10:got=mono();return
+ if stalled and mono()-lpr<30:got=mono();return
  lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
  if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
  cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
@@ -1306,7 +1306,8 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   it splices so playback continues with a small skip or repeat instead of a stall. When a reconnect
   lands too far behind to catch up in time, it replays rather than freezing.
 - **Switching is a last resort, as in the HLS profile.** It switches to the next backup after 60 s
-  without new video (sooner if its reserve is about to run out), on the offline placeholder, on a feed with no decodable video, or on a feed
+  without new video (sooner if its reserve is about to run out), on a feed whose audio and video
+  are more than 3 seconds apart (never sent to the player), on the offline placeholder, on a feed with no decodable video, or on a feed
   that has stayed slower than real time for 5 minutes. Refused or failed connections are retried
   on the same feed. A backup is joined only as deep as the outage lasted.
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
@@ -1545,7 +1546,7 @@ def handoff(why):
  if len(fl)<2:
   if not stalled:ost=got;log(why+"; no backup stream on this channel, so staying on this feed")
   stalled=True;got=mono();return
- if stalled and mono()-lpr<10:got=mono();return
+ if stalled and mono()-lpr<30:got=mono();return
  lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
  if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
  cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
@@ -1846,6 +1847,8 @@ def conn(r):
     if mono()-t0>STALL+2:raise ValueError("no decodable video timestamps")
     continue
    dp,ts=dec
+   va=[x for x in (pests(p) for p in pre) if x];fv_=next((x[1] for x in va if 0xE0<=x[0]<=0xEF),None);fa_=next((x[1] for x in va if 0xC0<=x[0]<=0xDF),None)
+   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60:raise ValueError("audio and video are %.0fs apart in this feed"%abs(dif(fv_,fa_)))
    if prim is None or dp!=prim:prim=dp
    pv=any(pests(p) and 0xE0<=pests(p)[0]<=0xEF for p in pre if (((p[1]&31)<<8)|p[2])==prim)
    ref=last.get(prim)
