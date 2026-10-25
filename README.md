@@ -437,6 +437,11 @@ The profiles handle this for you:
   channel.
 - **Once per recording.** Each recording's original length is saved in Dispatcharr's `/data`
   folder, so restarting Dispatcharr or its container mid-recording doesn't add the extension twice.
+- **Nothing is kept for long.** The saved lengths are tiny files (`hlsloop-jobs-<channel>.json`
+  and `tsloop-jobs-<channel>.json`, one per channel that has recorded, a few dozen bytes each).
+  Entries older than 24 hours are dropped whenever a file is updated, and every time a stream
+  starts, either profile deletes any of these files that hasn't changed in 24 hours. A recording
+  never needs its saved length for longer than that.
 - **Watching and recording at the same time is fine.** The stream itself is never changed for a
   recording, so a live viewer on the same channel sees nothing different.
 
@@ -974,6 +979,11 @@ def watch():
  global xb,pk,lj
  if not chid.isdigit():return
  e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set();tj=-1e9;jerr=set();jfail=False;og=None;jt=None;JF=("/data" if os.access("/data",os.W_OK) else "/tmp")+"/hlsloop-jobs-%s.json"%chid
+ try:
+  for f_ in os.listdir(os.path.dirname(JF)):
+   p_=os.path.join(os.path.dirname(JF),f_)
+   if f_.startswith(("hlsloop-jobs-","tsloop-jobs-")) and time.time()-os.path.getmtime(p_)>86400:os.remove(p_)
+ except Exception:pass
  def say(k,m):
   if k not in said:said.add(k);log("viewer buffer: "+m)
  def ext(rj):
@@ -1552,6 +1562,11 @@ def watch():
  global xb,vpk,vlj,xo
  if not chid.isdigit():return
  e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set();tj=-1e9;jerr=set();jfail=False;og=None;jt=None;JF=("/data" if os.access("/data",os.W_OK) else "/tmp")+"/tsloop-jobs-%s.json"%chid
+ try:
+  for f_ in os.listdir(os.path.dirname(JF)):
+   p_=os.path.join(os.path.dirname(JF),f_)
+   if f_.startswith(("hlsloop-jobs-","tsloop-jobs-")) and time.time()-os.path.getmtime(p_)>86400:os.remove(p_)
+ except Exception:pass
  def say(k,m):
   if k not in said:said.add(k);log("viewer buffer: "+m)
  def ext(rj):
