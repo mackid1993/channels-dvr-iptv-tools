@@ -35,6 +35,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 - [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile)
   - [Use an Xtream Codes account](#use-an-xtream-codes-account)
 - [Recordings](#recordings)
+- [Files the profiles write](#files-the-profiles-write)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
@@ -437,11 +438,7 @@ The profiles handle this for you:
   channel.
 - **Once per recording.** Each recording's original length is saved in Dispatcharr's `/data`
   folder, so restarting Dispatcharr or its container mid-recording doesn't add the extension twice.
-- **Nothing is kept for long.** The saved lengths are tiny files (`hlsloop-jobs-<channel>.json`
-  and `tsloop-jobs-<channel>.json`, one per channel that has recorded, a few dozen bytes each).
-  Entries older than 24 hours are dropped whenever a file is updated, and every time a stream
-  starts, either profile deletes any of these files that hasn't changed in 24 hours. A recording
-  never needs its saved length for longer than that.
+  See [Files the profiles write](#files-the-profiles-write).
 - **Watching and recording at the same time is fine.** The stream itself is never changed for a
   recording, so a live viewer on the same channel sees nothing different.
 
@@ -450,6 +447,19 @@ its own padding (...)`. Channels DVR shows the later end time on the recording.
 
 What it can't cover: if your provider runs more than about 45 seconds behind the broadcast, add a
 little end padding for those channels yourself.
+
+## Files the profiles write
+
+Both profiles keep two kinds of small files inside the Dispatcharr container. Nothing else is
+written, and nothing is written outside the container.
+
+| File | Where | What's in it | Why | Cleanup |
+|---|---|---|---|---|
+| `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
+| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten about once a second while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
+
+To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-*.json
+/tmp/tsloop-*.json` inside the container) while nothing is playing.
 
 ## HLS stream profile for Dispatcharr and Channels DVR
 
