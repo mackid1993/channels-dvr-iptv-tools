@@ -1395,7 +1395,7 @@ except ImportError:print("[tsloop stream] python requests module not found",file
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=60.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;sl0=0.0;sl1=0.0;PM=45.0;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
+mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=60.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;sl0=0.0;sl1=0.0;PM=45.0;avok=None;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
 hc={"r":0,"x":0,"f":0,"k":0.0}
 def log(m):
  for a,b in (("stream error","r"),("restarting remuxer","x"),("switching to stream","f")):
@@ -1732,7 +1732,7 @@ def budget():
  now=mono();qs=Qs[0]
  return max(qs+min(max(wlead,0.0),SIL-(now-wput if qs<=0 else 0))-1.0,3.0)
 def conn(r):
- global last,moff,qend,got,prim,pend,resumed,stalled,ph,short,le,lrf
+ global last,moff,qend,got,prim,pend,resumed,stalled,ph,short,le,lrf,avok
  rem=b"";pv=True;rest=[];mh=collections.deque();ta=0.0;lc=None;mode=None;pre=[];sync=set();t0=mono();media=0.0;hold={};seen=set();exact=set();kwait=set();gate=None;kt=mono();jump=None;nowait=False;beh=None;bs=[];hw=None;tw=None;hs=[];fin=False;c0=mono();lb={};lmin=None
  def emit(pk):
   global last,qend,got,prim,stalled,ph,gap,dlv,lv
@@ -1849,7 +1849,9 @@ def conn(r):
     continue
    dp,ts=dec
    va=[x for x in (pests(p) for p in pre) if x];fv_=next((x[1] for x in va if 0xE0<=x[0]<=0xEF),None);fa_=next((x[1] for x in va if 0xC0<=x[0]<=0xDF),None)
-   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60 and not (stalled and mono()-lv>30):raise ValueError("audio and video are %.0fs apart in this feed"%abs(dif(fv_,fa_)))
+   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60 and not (stalled and mono()-lv>30) and avok!=cur:raise ValueError("audio and video are %.0fs apart in this feed"%abs(dif(fv_,fa_)))
+   if fv_ is not None and fa_ is not None and 3<abs(dif(fv_,fa_))<WR-60:avok=cur
+   elif fv_ is not None and fa_ is not None:avok=None
    if prim is None or dp!=prim:prim=dp
    pv=any(pests(p) and 0xE0<=pests(p)[0]<=0xEF for p in pre if (((p[1]&31)<<8)|p[2])==prim)
    ref=last.get(prim)
