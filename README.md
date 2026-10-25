@@ -368,7 +368,7 @@ profile exists for providers that don't offer HLS.
 | Provider hiccup or late video | Re-fetches the missed segments from the playlist; nothing is lost if it is still listed (usually about a minute) | Only the reserve covers it; video from an outage longer than the reconnect overlap is lost for good |
 | Reconnects | Always continue the same timeline | Usually seamless (overlap is removed), but the provider can land on a different timeline (about 1 in 6 on our test provider), which shows as a small skip or repeat |
 | Extra head start per extra device | 5 s each, up to about 40 s in total | 5 s each, capped at about 8-14 s so failover keeps its headroom |
-| Backup failover, slow-feed failover, keepalive, stuck-feed recovery | Yes | Yes |
+| Backup failover (last resort), keepalive, stuck-feed recovery | Yes | Yes |
 | CPU per stream | Very low (works on whole segments) | Low, about 1-3 % of one core (handles every 188-byte packet in Python) |
 | Delay behind live | about 60 s | about 20 s |
 | Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
@@ -509,27 +509,35 @@ encoder does:
   Channels DVR last refreshed it), the profile refreshes that source in Channels DVR, the same
   as the **Refresh** button, and checks again. Playback never waits for this. Every Dispatcharr
   playlist you've added to Channels DVR is handled the same way.
-- **Fails over to the channel's backup streams without rewinding or pausing.** If the feed turns
-  into the provider's offline placeholder, or delivers no new video for about 30 seconds on
-  10-second segments, it switches to the next stream on the channel. The backup is joined only as
-  far back as the outage lasted, timestamps continue where the old feed stopped, and the new
-  remuxer is started before the old one finishes, so the output doesn't pause. Before switching it
-  checks that the backup answers with a real playlist (not the offline placeholder), and a feed
-  that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so a channel whose feeds are
-  all down waits instead of hopping between dead feeds. After an outage on every feed, the backup
-  is joined deep enough to rebuild the reserve. A backup on a different provider keeps its own
-  login. Add backup streams with [`dispatcharr_backup_streams.py`](#backup-streams-app).
+- **Switches to a backup only as a last resort.** Every feed of a channel is at a different point
+  in the program (two encodes of the same channel can be minutes apart, and providers don't send
+  the clock time needed to line them up), so a switch always means jumping forward or back in the
+  show. The profile therefore stays on the feed you're watching through anything it can ride out,
+  and you get a freeze that resumes at the same point instead of a jump:
+  - **Late segments, stalls, stale playlists, provider restarts, refused or timed-out requests
+    (407, 429, 503, read timeouts):** it keeps retrying the same feed. If video comes back within
+    about a minute, everything missed is fetched from the provider's playlist, so you continue
+    exactly where you were.
+  - **It switches only when** the feed serves the provider's offline placeholder (at once), has
+    delivered **no new video for 60 seconds** (sooner if the reserve is about to run out, so a
+    dead feed is replaced before the picture freezes), sends segments with **audio and video badly
+    apart** (two in a row), gets stuck mid-download, or has stayed **far slower than real time (below 0.75x)
+    for 5 minutes**. A merely slow feed never triggers a switch.
+  - **Before switching** it checks that the backup answers with a real playlist (not the offline
+    placeholder). A feed that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so
+    a channel whose feeds are all down waits instead of hopping between dead feeds. Once on a
+    backup it stays there as long as it works.
+  - **At the switch** the backup is joined as deep as the outage lasted (deep enough to rebuild
+    the reserve after a long one), timestamps continue where the old feed stopped, and the new
+    remuxer starts before the old one finishes, so the output doesn't pause. A backup on a
+    different provider keeps its own login. Add backup streams with
+    [`dispatcharr_backup_streams.py`](#backup-streams-app).
 - **Keeps pacing smooth through a switch.** The output stays at real time when it changes feeds,
   including to a backup with a different bitrate or frame rate, so players don't speed up or
-  stall. Timestamp jumps inside a feed are smoothed the same way.
-- **Fails over when a feed is slow, not just dead.** A feed that keeps delivering but slower than
-  real time drains the reserve without ever stopping. When delivery stays below 0.9x real time
-  over a 2-minute window, the reserve has actually been falling, and more has been lost than the
-  failover threshold allows, the profile switches to the next backup, joined as deep as what was
-  lost. If every feed is slow (the whole line or your connection), it backs off: 5, 10, 20, then
-  40 minutes between slow switches, reset once a feed is healthy. Without a backup it logs the
-  slowdown and stays. Before any switch it builds about 4 seconds of lead so the remux doesn't
-  pause the output.
+  stall.
+- **Holds back broken segments.** If a segment's audio and video are more than 3 seconds apart
+  (seen after provider restarts), it isn't sent, so the player never plays sound from one moment
+  over picture from another.
 - **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
   (and never plays the black placeholder) until the provider comes back.
 - **Keeps Dispatcharr from restarting the stream.** Whenever the output would go quiet for 2
@@ -712,7 +720,7 @@ with `[hlsloop stream]`:
 | `...; switching to stream N of M` | The feed died or went to the offline placeholder; the profile moved to the next backup stream. |
 | `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
 | `...; no backup stream is answering right now, so staying on this feed` | Every backup is down too; the profile waits and checks them again. |
-| `timestamps jumped Ns inside the feed, joining it smoothly` | The provider's timestamps jumped; the output timeline was kept continuous. |
+| `audio and video are Ns apart in this feed; holding it back` / `audio and video back in step; rejoining smoothly` | The provider sent segments with audio and video out of step; they were held back instead of played. |
 | `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
 | `joining the backup stream seamlessly (offset Xs)` | The backup's timestamps were shifted to continue the old feed's timeline. |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and the channel has no backup; the profile keeps waiting for it. |
@@ -720,7 +728,7 @@ with `[hlsloop stream]`:
 | `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr's database; failover is off for that stream. |
 | `playlist error (...); retry N in Ns` | A request failed and is being retried. |
 | `skipped segment N` | A segment could not be downloaded in time and was skipped so playback could continue. |
-| `provider is delivering 0.NNx real time and the reserve fell Ns to Ns; switching to stream N of M` | The feed was too slow; the profile moved to the next backup. |
+| `provider is delivering 0.NNx real time and the reserve fell Ns to Ns; switching to stream N of M` | The feed stayed far too slow for 5 minutes; the profile moved to the next backup. |
 | `output: no video to send for 2s, sending keepalive packets so the stream stays open` / `output: video flowing again after Ns without video` | A gap in the provider's delivery was covered by keepalive packets. Occasional short ones are normal. |
 | `reserve: empty, video now arrives only as fast as the provider publishes it` / `reserve: refilled to Ns` | The provider fell behind for longer than the reserve covers. This is the line that matches visible buffering. |
 | `input: fetch loop stuck for Ns, stopping keepalive so Dispatcharr restarts the stream` | The provider connection hung; Dispatcharr restarts the stream. |
@@ -734,10 +742,12 @@ switches, or `fetch loop stuck`.
 
 ### What it can't fix
 
-- **The program can skip or repeat up to one segment when it fails over.** Two feeds of the same
-  channel are separate encodes that run at different delays behind live, and providers don't send
-  the wall-clock time needed to line them up. The switch itself doesn't pause, but the program
-  continues from wherever the backup feed is.
+- **A switch to a backup jumps forward or back in the program.** Two feeds of the same channel are
+  separate encodes that can run minutes apart, and providers don't send the clock time needed to
+  line them up. That's why the profile switches only as a last resort. A provider that restarts a
+  channel by itself can cause the same kind of jump without any switch.
+- **Riding out an outage costs reserve.** The profile waits for the feed to come back as long as
+  its reserve lasts (up to 60 seconds), then switches just before the picture would freeze.
 - **Feeds with a different resolution, frame rate or codec** can cause a brief flicker on the
   client at a failover while its decoder resets. Nothing is re-encoded to hide it.
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
@@ -767,7 +777,7 @@ def hsu(u):return HSX.sub(r"\1.m3u8",u or "",count=1)
 if HSX.search(src):src=hsu(src);print("[hlsloop stream] input: provider stream URL is MPEG-TS; using its HLS form",file=sys.stderr,flush=True)
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False;PM=45.0
+mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False;DEADT=60.0;PM=45.0
 LG=threading.Lock();CNT=collections.Counter();CK=threading.Lock();ns=0
 def inc(k,v=1):
  with CK:CNT[k]+=v
@@ -851,8 +861,10 @@ def tsig(d):
     return tuple(sorted(e for e in es if e[0] in AV))
  except Exception:pass
  return None
+PSK=None;nsk=0
 def pts0(d):
- fb=None;fv=None
+ global PSK
+ fb=None;fv=None;PSK=None
  try:
   for i in range(0,min(len(d),188*2000),188):
    p=d[i:i+188]
@@ -867,6 +879,7 @@ def pts0(d):
     elif fb is None:fb=v
     if fv is not None and fb is not None:break
  except Exception:pass
+ if fv is not None and fb is not None:PSK=fv-fb
  if fv is None or fb is None:return fv if fv is not None else fb
  return fv if abs(fv-fb)>5 else min(fv,fb)
 keys={};warned=set()
@@ -1123,7 +1136,7 @@ def writer():
  lead=wlead;t=mono();cpr=None;cpt=mono();cbv=None;cbt=mono()
  while run:
   try:
-   now=mono();wb=now;lead=max(lead-(now-t),-3.0);t=now;wlead=lead
+   now=mono();wb=now;lead=max(lead-(now-t),0.0);t=now;wlead=lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
    with ql:
     it=Q[0] if Q else None;qs=Qs[0]
@@ -1140,7 +1153,7 @@ def writer():
    cbv=cb if cbv is None else min(cb,cbv+0.02*(now-cbt));cbt=now
    cl=min(cbv+xb,clcap())
    with ql:rmx=any(x[0]=="remux" for x in list(Q)[1:5])
-   if rmx:cl=max(cl,min(4.0,clcap()))
+   if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
    if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
@@ -1204,12 +1217,12 @@ while not gone():
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
   else:new=[q for q in segs if q["n"]>last];lag=None;gap=None
-  lim=cushlim()
+  lim=max(cushlim(),DEADT)
   if new:fresh=mono()
-  if mono()-got>lim:
+  if mono()-got>lim or (mono()-got>cushlim() and Qs[0]+max(wlead,0.0)<10.0):
    handoff("no new video for %ds"%(mono()-got))
    if not stalled:continue
-  elif not new and mono()-fresh>0.6*lim:log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
+  elif not new and mono()-fresh>0.6*cushlim():log("playlist stale %ds, re-resolving"%(mono()-fresh));media=None;fresh=mono();continue
   if not new and mono()-fresh>0.8*tgt:w=min(w,max(tgt/10,0.5))
   if last is not None and len(new)>1:log("catching up %d segments"%len(new));inc("cu")
   for q in new:
@@ -1226,9 +1239,14 @@ while not gone():
     if cmap is not None:enq(["remux","new init segment",0,None]);sig=None
     i=s.get(q["m"],timeout=(3,5));i.raise_for_status();enq(["init",i.content,0]);cmap=q["m"]
    p0=pts0(d)
-   if not pend and qend is not None and p0 is not None:
-    dj=p0+moff-qend
-    if 2<abs(dj)<WR-60:pend=True;log("timestamps jumped %.1fs inside the feed, joining it smoothly"%dj)
+   if PSK is not None and 3<abs(PSK)<WR-60:
+    nsk+=1
+    if nsk==1:log("audio and video are %.1fs apart in this feed; holding it back"%PSK)
+    if nsk>=2 and not stalled:
+     handoff("audio and video are %.0fs apart in this feed"%abs(PSK))
+     if not stalled:nsk=0;break
+    if nsk*(q["d"] or tgt)<(30 if qend is not None else 0.1):last=n;bad.discard(n);seen.append(q["p"]);continue
+   elif nsk:nsk=0;pend=True;log("audio and video back in step; rejoining smoothly")
    if pend and p0 is not None:
     pend=False
     if qend is not None:moff=qend-p0;enq(["remux","joining the backup stream seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
@@ -1240,7 +1258,7 @@ while not gone():
    enq(["seg",d,q["d"] or tgt,n,p0,o]);dq.append((mono(),q["d"] or tgt));ns+=1
    last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
-  now=mono();SW=max(120.0,6*tgt)
+  now=mono();SW=max(300.0,30*tgt)
   if cur in fbad and last is not None and not stalled and now-fst>120 and now-got<2*tgt:fbad.pop(cur,None)
   with ql:qs=Qs[0]
   rq.append((now,qs+max(wlead,0.0)))
@@ -1249,7 +1267,7 @@ while not gone():
   if not stalled and last is not None and now-fst>SW and rq:
    dp=dep or 3*tgt;rt=(sum(x[1] for x in dq)+tgt)/SW;lost=dp-max(wlead,0.0)-qs;drop=max(x[1] for x in rq)-(qs+max(wlead,0.0))
    if rt>=1.0 and drop<0.05*SW:nsl=0
-   if rt<0.9 and lost>cushlim() and drop>=0.1*SW and now-lsw>300*2**nsl:
+   if rt<0.75 and lost>cushlim() and drop>=0.1*SW and now-lsw>300*2**nsl:
     lsw=now;nsl=min(nsl+1,4);why="provider is delivering %.2fx real time and the reserve fell %.0fs to %.0fs"%(rt,drop,qs)
     fl=feeds()
     if len(fl)>1:handoff(why,lost,fl);continue
@@ -1257,12 +1275,12 @@ while not gone():
   rb=mono()+w;time.sleep(w)
  except Exception as e:
   if e0 is None:e0=mono()
-  if mono()-got>cushlim():
+  if mono()-got>max(cushlim(),DEADT) or (mono()-got>cushlim() and Qs[0]+max(wlead,0.0)<10.0):
    handoff("feed unreachable for %ds"%(mono()-e0))
    if not stalled:err=0;e0=None;continue
   err+=1;media=None;rs=getattr(e,"response",None);c=getattr(rs,"status_code",0);ra=rs.headers.get("Retry-After","") if rs is not None else ""
   dl=min(int(ra),30) if ra.isdigit() else (min(2*err,10) if c in BUSY else min(err,5))
-  if not stalled:dl=max(0.5,min(dl,cushlim()-(mono()-got)))
+  if not stalled:dl=max(0.5,min(dl,max(cushlim(),DEADT)-(mono()-got)))
   log("playlist error (%s); retry %d in %ds"%(e,err,dl));inc("pe");rb=mono()+dl;time.sleep(dl)
 bye()' {streamUrl} {userAgent} {channelId}
 ```
@@ -1287,9 +1305,10 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   and starts the new connection on a keyframe. When the provider lands on a different timeline,
   it splices so playback continues with a small skip or repeat instead of a stall. When a reconnect
   lands too far behind to catch up in time, it replays rather than freezing.
-- **Failover thresholds are in reserve seconds.** It switches to the next backup after 8 s without
-  new video once the reserve is low, after 20 s regardless, on a feed slower than real time, or on a
-  feed with no decodable video. A backup is joined only as deep as the outage lasted.
+- **Switching is a last resort, as in the HLS profile.** It switches to the next backup after 60 s
+  without new video (sooner if its reserve is about to run out), on the offline placeholder, on a feed with no decodable video, or on a feed
+  that has stayed slower than real time for 5 minutes. Refused or failed connections are retried
+  on the same feed. A backup is joined only as deep as the outage lasted.
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
   gets a fresh connection for a new burst, at most once every 5 minutes. This can cause the
   occasional small skip on a drifting channel.
@@ -1374,7 +1393,7 @@ except ImportError:print("[tsloop stream] python requests module not found",file
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=20.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;PM=45.0;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
+mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=60.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;sl0=0.0;sl1=0.0;PM=45.0;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
 hc={"r":0,"x":0,"f":0,"k":0.0}
 def log(m):
  for a,b in (("stream error","r"),("restarting remuxer","x"),("switching to stream","f")):
@@ -1673,7 +1692,7 @@ def writer():
  lead=wlead;t=mono();sv=0.0;remp=False;dh=collections.deque();dt=0.0;ce=max(CL,min(wlead,CL+xb));tc=mono();rxt=-1e9;pxb=xb
  while run:
   try:
-   now=mono();wb=now;lead=max(lead-(now-t),-3.0);t=now;wlead=lead
+   now=mono();wb=now;lead=max(lead-(now-t),0.0);t=now;wlead=lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1 if mono()-rxt<10 else 0.1);rxt=mono();continue
    with ql:
     it=Q[0] if Q else None;qs=Qs[0]
@@ -1693,7 +1712,7 @@ def writer():
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
    cd=max(ca-it[8],0.0)
-   rx=nrx[0]>0;ce=min(max(min(CL+xb+(RXL if rx else 0.0),clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc)),ce+(RXR if rx else RAMP)*(now-tc)+max(xb-pxb,0.0));tc=now;pxb=xb
+   rx=nrx[0]>0 and qs>4.0;ce=min(max(min(CL+xb+(RXL if rx else 0.0),clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc)),ce+(RXR if rx else RAMP)*(now-tc)+max(xb-pxb,0.0));tc=now;pxb=xb
    if cd>0 and lead>=ce and qs<=QMAX+30:time.sleep(0.02);continue
    put(d[it[7]:en]);it[6]=i+1;it[7]=en;it[8]=max(ca,it[8]);wput=mono();lead=min(lead+cd,ce+10.0);dl=sn;wcur=it[4]
    with ql:
@@ -1944,10 +1963,13 @@ while not gone():
   if e0 is None:e0=mono()
   if "fresh burst" in str(e):log("input: "+str(e));e0=None;rb=mono();time.sleep(0.2);continue
   ng=mono()-got
-  if "slower than real time" in str(e):ng=max(ng,STALL+0.1)
-  if ng>FAILT or (ng>STALL and (Qs[0]<RLOW+3.0 or mono()-wput>QUIET)):
+  if "slower than real time" in str(e):
+   if not sl0 or mono()-sl1>120:sl0=mono()
+   sl1=mono()
+  if ng>FAILT or (ng>STALL and Qs[0]+max(wlead,0.0)<RLOW+3.0) or (sl0 and mono()-sl0>300 and mono()-sl1<120):
+   if sl0 and mono()-sl0>300:e=ValueError("feed has been slower than real time for 5 minutes");gap=max(gap or 0.0,RES) if pend else gap
+   sl0=0.0
    ph+=1;handoff("no new video for %ds (%s)"%(mono()-got,str(e)[:80]))
-   if "slower than real time" in str(e) and pend:gap=max(gap or 0.0,RES)
    if not stalled:err=0;e0=None;continue
   err+=1;rs=getattr(e,"response",None);c=getattr(rs,"status_code",0);ra=rs.headers.get("Retry-After","") if rs is not None else ""
   dl_=min(int(ra),30) if ra.isdigit() else (min(2*err,10) if c in BUSY else (0.2 if err==1 else min(err-1,5)))
