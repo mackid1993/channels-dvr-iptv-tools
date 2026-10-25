@@ -553,7 +553,7 @@ asks Channels DVR to refresh that source.
    ```
 
 4. **Parameters:** copy the **whole** block under
-   [Profile parameters](#profile-parameters) below (on GitHub, use the copy button in the
+   [HLS profile parameters](#hls-profile-parameters) below (on GitHub, use the copy button in the
    block's top-right corner) and paste it into the Parameters box.
    - It starts with `-u -c '` and ends with `' {streamUrl} {userAgent} {channelId}`.
    - Paste it as is. Don't edit it, don't join the lines, and don't add or remove quotes. The
@@ -639,7 +639,7 @@ switches, or `fetch loop stuck`.
 Set **Default Stream Profile** (or the channel's **Stream Profile**) back to what it was, then
 retune. You can delete the profile afterwards.
 
-### Profile parameters
+### HLS profile parameters
 
 ```text
 -u -c 'import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
