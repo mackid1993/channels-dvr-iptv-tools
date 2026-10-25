@@ -34,7 +34,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [Known limitations](#known-limitations)
 - [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile)
   - [Xtream Codes accounts and the HLS profile](#xtream-codes-accounts-and-the-hls-profile)
-- [Dispatcharr stream profile for Channels DVR](#dispatcharr-stream-profile-for-channels-dvr)
+- [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
@@ -48,7 +48,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [What it can't fix](#what-it-cant-fix)
   - [Undo](#undo)
   - [HLS profile parameters](#hls-profile-parameters)
-- [MPEG-TS stream profile for Channels DVR](#mpeg-ts-stream-profile-for-channels-dvr)
+- [MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr)
   - [How it differs from the HLS profile](#how-it-differs-from-the-hls-profile)
   - [Requirements](#requirements-2)
   - [Create and turn it on](#create-and-turn-it-on)
@@ -78,8 +78,8 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 | [`m3u_editor_stationid_matcher.py`](m3u_editor_stationid_matcher.py) | Desktop app. Same matching; applies the IDs through a small m3u-editor plugin that the app exports for you. | m3u-editor |
 | [`plugin/`](plugin) | Source of that m3u-editor plugin, for reading. The app builds the installable zip. | m3u-editor |
 | [`dispatcharr_backup_streams.py`](dispatcharr_backup_streams.py) | Desktop app. Finds other feeds of each channel and adds them as backup streams through Dispatcharr's API. | Dispatcharr |
-| [HLS stream profile](#dispatcharr-stream-profile-for-channels-dvr) (in this README) | **Recommended.** A Dispatcharr stream profile for Channels DVR, for providers that send HLS (`.m3u8`): holds the buffer, paces the stream, sizes the head start for the devices watching, and fails over. | Dispatcharr + Channels DVR |
-| [MPEG-TS stream profile](#mpeg-ts-stream-profile-for-channels-dvr) (in this README) | The same for providers that only send raw MPEG-TS (`.ts`). Use it only when your provider has no HLS. | Dispatcharr + Channels DVR |
+| [HLS stream profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) (in this README) | **Recommended.** A Dispatcharr stream profile for Channels DVR, for providers that send HLS (`.m3u8`): holds the buffer, paces the stream, sizes the head start for the devices watching, and fails over. | Dispatcharr + Channels DVR |
+| [MPEG-TS stream profile](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr) (in this README) | The same for providers that only send raw MPEG-TS (`.ts`). Use it only when your provider has no HLS. | Dispatcharr + Channels DVR |
 
 The two station ID apps match channels the same way. They differ only in where the channels come from and
 how the IDs are saved. Use the app for whichever manager you run.
@@ -111,9 +111,9 @@ If you already run one, use it; both work with Channels DVR. If you're choosing:
 | | Dispatcharr | m3u-editor |
 |---|---|---|
 | Saving Gracenote IDs from the matcher | Written directly through Dispatcharr's API | Pasted into a plugin action (m3u-editor's API can't set them) |
-| HLS provider hiccups | The built-in stream profiles give up after 3 quick reconnects. Use the [HLS stream profile](#dispatcharr-stream-profile-for-channels-dvr) in this README. | Passes the provider's HLS through; Channels DVR fetches the next segment |
+| HLS provider hiccups | The built-in stream profiles give up after 3 quick reconnects. Use the [HLS stream profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) in this README. | Passes the provider's HLS through; Channels DVR fetches the next segment |
 | Adding backup streams in bulk | The [backup streams app](#backup-streams-app) | By hand, or m3u-editor's auto-merge |
-| Provider that only sends MPEG-TS | The [MPEG-TS stream profile](#mpeg-ts-stream-profile-for-channels-dvr) in this README, or the built-in proxy | Works, with no special TS buffering |
+| Provider that only sends MPEG-TS | The [MPEG-TS stream profile](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr) in this README, or the built-in proxy | Works, with no special TS buffering |
 | Backup streams per channel | Automatic switching | Failover channels, set by hand or with auto-merge |
 | Several logins for one provider | M3U account profiles | Provider profiles |
 
@@ -406,10 +406,10 @@ to build the list, so the refresh fails every time. Xtream Codes loads the chann
 (`http://provider`), with the username and password in their own fields, and make sure they are the
 same line's pair.
 
-## Dispatcharr stream profile for Channels DVR
+## HLS stream profile for Dispatcharr and Channels DVR
 
 This is the **HLS profile** (recommended). For providers that only send MPEG-TS, see
-[MPEG-TS stream profile for Channels DVR](#mpeg-ts-stream-profile-for-channels-dvr).
+[MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr).
 
 **This profile is built specifically for Channels DVR watching through Dispatcharr.** It works out
 which Channels DVR channel each stream is, asks Channels DVR how many devices are watching it, and
@@ -1129,10 +1129,10 @@ while not gone():
 bye()' {streamUrl} {userAgent} {channelId}
 ```
 
-## MPEG-TS stream profile for Channels DVR
+## MPEG-TS stream profile for Dispatcharr and Channels DVR
 
 **Use this only if your provider has no HLS.** See [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile).
-It does the same job as the [HLS profile](#dispatcharr-stream-profile-for-channels-dvr) for providers
+It does the same job as the [HLS profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) for providers
 whose stream URLs are raw MPEG-TS (`.ts`), and is built specifically for Channels DVR in the same
 way: it counts the devices watching and refreshes an out-of-date Channels DVR source the same way.
 
@@ -1741,7 +1741,7 @@ bye()' {streamUrl} {userAgent} {channelId}
 ## Backup streams app
 
 `dispatcharr_backup_streams.py` adds backup streams to your Dispatcharr channels in bulk, so the
-[stream profile](#dispatcharr-stream-profile-for-channels-dvr) (or Dispatcharr's own stream
+[stream profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) (or Dispatcharr's own stream
 switching) has another feed to move to when one dies. It finds other feeds of the same channel
 among all your streams, shows them in a table for you to review, and writes the ones you approve
 through Dispatcharr's API.
