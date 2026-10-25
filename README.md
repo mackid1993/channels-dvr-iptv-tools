@@ -33,11 +33,13 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [Where data is stored](#where-data-is-stored)
   - [Known limitations](#known-limitations)
 - [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile)
-  - [Xtream Codes accounts and the HLS profile](#xtream-codes-accounts-and-the-hls-profile)
+  - [Use an Xtream Codes account](#use-an-xtream-codes-account)
+- [Recordings](#recordings)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
+  - [Recordings](#recordings-1)
   - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
   - [Requirements](#requirements-1)
   - [What it sends to Channels DVR](#what-it-sends-to-channels-dvr)
@@ -360,6 +362,7 @@ profile exists for providers that don't offer HLS.
 
 | | HLS profile (recommended) | MPEG-TS profile (fallback) |
 |---|---|---|
+| Best source | **Xtream Codes account** (its `.ts` addresses are read as HLS automatically) | **Xtream Codes account** |
 | Provider stream URLs | `.m3u8`, or Xtream `.ts` addresses (switched to `.m3u8` automatically) | `.ts` (or no extension) only |
 | Reserve held in Dispatcharr | about 60 s (the provider's whole playlist window) | about 20-26 s (only what the provider bursts on connect) |
 | Provider hiccup or late video | Re-fetches the missed segments from the playlist; nothing is lost if it is still listed (usually about a minute) | Only the reserve covers it; video from an outage longer than the reconnect overlap is lost for good |
@@ -368,11 +371,23 @@ profile exists for providers that don't offer HLS.
 | Backup failover, slow-feed failover, keepalive, stuck-feed recovery | Yes | Yes |
 | CPU per stream | Very low (works on whole segments) | Low, about 1-3 % of one core (handles every 188-byte packet in Python) |
 | Delay behind live | about 60 s | about 20 s |
+| Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
 | Log prefix | `[hlsloop stream]` | `[tsloop stream]` |
 
 Both send **MPEG-TS** to Channels DVR. Only what they read from the provider differs.
 
-### Xtream Codes accounts and the HLS profile
+### Use an Xtream Codes account
+
+**If your provider offers Xtream Codes (a server address, username and password), add it to
+Dispatcharr as an Xtream Codes account rather than an M3U link.** It's the better choice with both
+profiles:
+
+- **Faster and more reliable channel lists.** Xtream Codes loads the channel list from
+  `player_api.php`, which is usually far quicker than an M3U download. Dispatcharr gives up on an
+  M3U download that sends nothing for 60 seconds, and some providers' `get.php` takes longer than
+  that to build the list, so the refresh fails every time.
+- **Both profiles handle it properly.** You don't need an HLS option in the provider's settings or
+  an `output=` parameter.
 
 On Xtream-style providers every live channel is available as HLS and as MPEG-TS at the same address,
 differing only in the ending:
@@ -382,29 +397,54 @@ http://provider/live/<user>/<pass>/<id>.m3u8   (HLS)
 http://provider/live/<user>/<pass>/<id>.ts     (MPEG-TS)
 ```
 
-Dispatcharr stores every stream of an **Xtream Codes** account with the `.ts` ending, and has no
-setting to change that. The **HLS profile** handles it for you:
+Dispatcharr stores every stream of an Xtream Codes account with the `.ts` ending, and has no
+setting to change that. That's fine:
 
-- **`.ts` Xtream address:** the profile switches it to `.m3u8` before connecting, and logs
-  `input: provider stream URL is MPEG-TS; using its HLS form` once per tune. The same is done for
-  every backup stream and after a Dispatcharr restart.
-- **Already `.m3u8`** (an M3U account with `output=m3u8`): left exactly as it is. Nothing is
-  converted.
-- Only `/live/<user>/<pass>/<number>.ts` addresses are touched; anything else is left alone.
+- **HLS profile:** it switches each `.ts` Xtream address to its `.m3u8` form before connecting
+  (logging `input: provider stream URL is MPEG-TS; using its HLS form` once per tune). It does the
+  same for every backup stream and after a Dispatcharr restart. So you get HLS from an Xtream Codes
+  account even though Dispatcharr has no HLS option for it. Addresses that are already `.m3u8` are
+  left exactly as they are, and only `/live/<user>/<pass>/<number>.ts` addresses are touched.
+- **MPEG-TS profile:** it reads the `.ts` addresses as they are. An `.m3u8` address is refused
+  with `this stream URL is HLS; use the HLS profile for it`.
 
-So with the HLS profile you can use an **Xtream Codes** account or an `output=m3u8` M3U account,
-whichever your provider handles better.
+**Setting it up:** in Dispatcharr add an M3U account of type **Xtream Codes**, with the server
+address only (`http://provider`) and the username and password in their own fields (make sure
+they are the same line's pair).
 
-The **MPEG-TS profile does no conversion**: it only plays MPEG-TS addresses (`.ts`, or no
-extension), and refuses an `.m3u8` address with `this stream URL is HLS; use the HLS profile for it`.
-Use it with an Xtream Codes account or an `output=ts` M3U account.
+An M3U link still works: `output=m3u8` for the HLS profile, `output=ts` for the MPEG-TS profile.
 
-**If your provider's M3U download is slow, use an Xtream Codes account.** Dispatcharr gives up on an
-M3U download that sends nothing for 60 seconds, and some providers' `get.php` takes longer than that
-to build the list, so the refresh fails every time. Xtream Codes loads the channel list from
-`player_api.php` instead, which is usually far faster. Use the server address only
-(`http://provider`), with the username and password in their own fields, and make sure they are the
-same line's pair.
+## Recordings
+
+Both profiles run a little behind the provider's live edge: that's the reserve that rides out late
+or missing video (about 60 s for HLS, about 20 s for MPEG-TS). Channels DVR starts and stops
+recordings by the clock, so without help the last minute of a program would still be inside the
+profile when Channels DVR stops recording, and the ending would be cut off.
+
+The profiles handle this for you:
+
+- **They extend the recording in Channels DVR.** While a recording is running on a channel using
+  the profile, the profile lengthens that recording (the same as editing its end time in Channels
+  DVR) by the profile's own measured delay **plus 45 seconds** for the provider itself running
+  behind the broadcast (IPTV providers usually run about 20-40 s behind). That's about 105 s past
+  the end for HLS and about 65-80 s for MPEG-TS, never more than 3 minutes.
+- **Your padding is kept.** The extension is added **on top of** whatever end padding the recording
+  or its pass already has. If you record a show 30 minutes late because a game runs before it, it
+  still gets its 30 minutes, plus the extension.
+- **Only recordings made through this profile.** The profile asks Channels DVR which recordings are
+  using this exact source and channel. Recordings Channels DVR makes from any other source (an
+  antenna, another provider, a TV Everywhere source) are never touched, even if they list the same
+  channel.
+- **Once per recording.** Each recording's original length is saved in Dispatcharr's `/data`
+  folder, so restarting Dispatcharr or its container mid-recording doesn't add the extension twice.
+- **Watching and recording at the same time is fine.** The stream itself is never changed for a
+  recording, so a live viewer on the same channel sees nothing different.
+
+In Dispatcharr's log the profile reports it as `recording: <show> on ch N extended by Ns on top of
+its own padding (...)`. Channels DVR shows the later end time on the recording.
+
+What it can't cover: if your provider runs more than about 45 seconds behind the broadcast, add a
+little end padding for those channels yourself.
 
 ## HLS stream profile for Dispatcharr and Channels DVR
 
@@ -468,8 +508,15 @@ encoder does:
   into the provider's offline placeholder, or delivers no new video for about 30 seconds on
   10-second segments, it switches to the next stream on the channel. The backup is joined only as
   far back as the outage lasted, timestamps continue where the old feed stopped, and the new
-  remuxer is started before the old one finishes, so the output doesn't pause. Add backup streams
-  with [`dispatcharr_backup_streams.py`](#backup-streams-app).
+  remuxer is started before the old one finishes, so the output doesn't pause. Before switching it
+  checks that the backup answers with a real playlist (not the offline placeholder), and a feed
+  that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so a channel whose feeds are
+  all down waits instead of hopping between dead feeds. After an outage on every feed, the backup
+  is joined deep enough to rebuild the reserve. A backup on a different provider keeps its own
+  login. Add backup streams with [`dispatcharr_backup_streams.py`](#backup-streams-app).
+- **Keeps pacing smooth through a switch.** The output stays at real time when it changes feeds,
+  including to a backup with a different bitrate or frame rate, so players don't speed up or
+  stall. Timestamp jumps inside a feed are smoothed the same way.
 - **Fails over when a feed is slow, not just dead.** A feed that keeps delivering but slower than
   real time drains the reserve without ever stopping. When delivery stays below 0.9x real time
   over a 2-minute window, the reserve has actually been falling, and more has been lost than the
@@ -489,6 +536,7 @@ encoder does:
   goes straight to the channel's next backup instead of the same stuck feed.
 - **Tells a lagging server from a channel restart**, and **backs off politely** on
   connection-limit responses (503, 509, 429, honouring `Retry-After` up to 30 seconds).
+- **Recordings keep their ending.** See [Recordings](#recordings-1).
 - **No re-encoding.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
   unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are supported.
 
@@ -542,6 +590,11 @@ Example on a channel with 10-second segments:
 If the profile can't identify the channel in Channels DVR (see **Finds the channel in Channels DVR on its own** above), it doesn't count viewers
 and every device gets the single-viewer 1-second lead. Playback is otherwise unaffected.
 
+### Recordings
+
+The profile extends each recording made through it by its delay plus 45 seconds, on top of your
+own padding, so recordings keep the end of the program. Details in [Recordings](#recordings).
+
 ### HLS in, MPEG-TS out
 
 This is the part people mix up, so in plain English:
@@ -582,10 +635,9 @@ it at its default.
   installed. It reads each channel's UUID and backup streams from Dispatcharr's own database, and
   its client list from Dispatcharr's Redis, using settings Dispatcharr already passes to its
   stream processes.
-- **Your provider must offer HLS** for the channels. On Xtream providers, `.ts` addresses
-  (including every Xtream Codes account) are switched to their `.m3u8` form automatically (see
-  [Xtream Codes accounts and the HLS profile](#xtream-codes-accounts-and-the-hls-profile)). Other providers'
-  stream URLs must end in `.m3u8`. This is only what Dispatcharr receives from the provider; what it
+- **Your provider must offer HLS** for the channels. **Use an Xtream Codes account if you can**
+  (see [Use an Xtream Codes account](#use-an-xtream-codes-account)): its `.ts` addresses are
+  switched to their `.m3u8` form automatically. Other providers' stream URLs must end in `.m3u8`. This is only what Dispatcharr receives from the provider; what it
   sends to Channels DVR stays MPEG-TS. Check under **Streams** in
   Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
   HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
@@ -594,9 +646,10 @@ it at its default.
 
 ### What it sends to Channels DVR
 
-The profile only reads from Channels DVR (`/settings`, `/devices/<source>/channels` and
-`/dvr/activity`), with one exception: when a Dispatcharr source in Channels DVR is out of date, it
-asks Channels DVR to refresh that source.
+The profile reads from Channels DVR (`/settings`, `/devices/<source>/channels`, `/dvr/activity`
+and `/dvr/jobs`). It changes only two things: when a Dispatcharr source in Channels DVR is out of
+date it asks Channels DVR to refresh that source, and it lengthens recordings made through it (see
+[Recordings](#recordings)).
 
 ### Create the profile
 
@@ -616,8 +669,6 @@ asks Channels DVR to refresh that source.
      program is wrapped in single quotes and contains none itself, which is what lets it sit in
      the Parameters box safely.
 5. Press **Save**.
-
-If you used an earlier version of this profile, replace its Parameters with the new block.
 
 ### Turn it on
 
@@ -648,12 +699,16 @@ with `[hlsloop stream]`:
 | `viewer buffer: N viewers on Channels DVR ch N, sent the new viewer a Ns head start (lead now Ns, reserve Ns)` | Another device joined; every device on the tuner got the extra head start. `reserve at its floor` means the reserve was too low to give the full 5 seconds. |
 | `viewer buffer: reserve rebuilt to Ns` | The reserve finished refilling after joins used part of it. |
 | `viewer buffer: Channels DVR source <source> is out of date, refreshing it` | The Channels DVR source didn't match Dispatcharr's playlist, so the profile refreshed it. |
-| `viewer buffer: off ...` | The viewer buffer is off for this stream (the reason follows); playback is unaffected and uses the single-viewer head start. |
+| `viewer buffer: off ...` / `viewer buffer: waiting ...` | The viewer buffer is off or waiting for Channels DVR on this stream (the reason follows); playback is unaffected and uses the single-viewer head start. It keeps checking, so a recording or viewer that arrives later is still picked up. |
 | `catching up N segments` | The provider stalled; the profile downloaded what it missed and refilled the reserve. |
 | `playlist stale Ns, re-resolving` | The playlist stopped updating; the profile requested it again. |
 | `edge server is behind, waiting for it to catch up` | A provider server was a few segments behind; nothing was replayed. |
 | `provider restarted the channel, rejoining` | The provider restarted the channel; the profile rejoined it. |
 | `...; switching to stream N of M` | The feed died or went to the offline placeholder; the profile moved to the next backup stream. |
+| `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
+| `...; no backup stream is answering right now, so staying on this feed` | Every backup is down too; the profile waits and checks them again. |
+| `timestamps jumped Ns inside the feed, joining it smoothly` | The provider's timestamps jumped; the output timeline was kept continuous. |
+| `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
 | `joining the backup stream seamlessly (offset Xs)` | The backup's timestamps were shifted to continue the old feed's timeline. |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and the channel has no backup; the profile keeps waiting for it. |
 | `resuming after Dispatcharr restart` | Dispatcharr restarted the stream; the profile picked up where it stopped. |
@@ -678,8 +733,8 @@ switches, or `fetch loop stuck`.
   channel are separate encodes that run at different delays behind live, and providers don't send
   the wall-clock time needed to line them up. The switch itself doesn't pause, but the program
   continues from wherever the backup feed is.
-- **Feeds with a different resolution or codec** can cause a brief glitch on the client at a
-  failover while its decoder resets.
+- **Feeds with a different resolution, frame rate or codec** can cause a brief flicker on the
+  client at a failover while its decoder resets. Nothing is re-encoded to hide it.
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
   when the provider comes back, the profile recovers on its own, but video from the outage is lost.
 - **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
@@ -707,7 +762,7 @@ def hsu(u):return HSX.sub(r"\1.m3u8",u or "",count=1)
 if HSX.search(src):src=hsu(src);print("[hlsloop stream] input: provider stream URL is MPEG-TS; using its HLS form",file=sys.stderr,flush=True)
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False
+mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False;PM=45.0
 LG=threading.Lock();CNT=collections.Counter();CK=threading.Lock();ns=0
 def inc(k,v=1):
  with CK:CNT[k]+=v
@@ -792,6 +847,7 @@ def tsig(d):
  except Exception:pass
  return None
 def pts0(d):
+ fb=None;fv=None
  try:
   for i in range(0,min(len(d),188*2000),188):
    p=d[i:i+188]
@@ -800,10 +856,14 @@ def pts0(d):
    af=(p[3]>>4)&3
    if af==2:continue
    o=5+p[4] if af==3 else 4
-   if p[o:o+3]==bytes([0,0,1]) and p[o+3]>=0xC0 and p[o+3]<=0xEF and p[o+7]&0x80:
-    b=p[o+9:o+14];return (((b[0]>>1)&7)<<30|b[1]<<22|(b[2]>>1)<<15|b[3]<<7|b[4]>>1)/90000.0
+   if o+14<=188 and p[o:o+3]==bytes([0,0,1]) and p[o+3]>=0xC0 and p[o+3]<=0xEF and p[o+7]&0x80:
+    b=p[o+9:o+14];v=(((b[0]>>1)&7)<<30|b[1]<<22|(b[2]>>1)<<15|b[3]<<7|b[4]>>1)/90000.0
+    if p[o+3]>=0xE0:fv=v if fv is None else fv
+    elif fb is None:fb=v
+    if fv is not None and fb is not None:break
  except Exception:pass
- return None
+ if fv is None or fb is None:return fv if fv is not None else fb
+ return fv if abs(fv-fb)>5 else min(fv,fb)
 keys={};warned=set()
 def tsok(q,d):
  if not q["m"] and d[:3]!=b"ID3" and not (d[:1]==b"\x47" and (len(d)<189 or d[188]==0x47)):raise ValueError("segment is not MPEG-TS (%d bytes)"%len(d))
@@ -824,13 +884,13 @@ st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;xb=float(j.get("xb",0.0));pk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4 and j.get("src")==src:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;xb=float(j.get("xb",0.0));pk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"src":src,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -847,21 +907,45 @@ def feeds():
    urls=[hsu(u) for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order",(int(chid),)).fetchall() if u]
  except Exception as x:log("could not read backup streams (%s)"%x);return [src]
  m=XC.search(src)
- if m:urls=[XC.sub("/%s/%s/%s/"%(mm.group(1),m.group(2),m.group(3)),u,count=1) if (mm:=XC.search(u)) else u for u in urls]
+ if m:urls=[XC.sub("/%s/%s/%s/"%(mm.group(1),m.group(2),m.group(3)),u,count=1) if (mm:=XC.search(u)) and up.urlsplit(u).netloc==up.urlsplit(src).netloc else u for u in urls]
  out=[src]
  for u in urls:
   if u not in out and XC.sub("/",u)!=XC.sub("/",src):out.append(u)
  return out
-cur=src;pend=False
+cur=src;pend=False;fbad={};lpr=-1e9
+def mark(u):
+ b=fbad.get(u,[0,0]);fbad[u]=[mono()+min(60*2**b[1],600),b[1]+1];return fbad[u][0]-mono()
+def probe(u):
+ try:
+  r=s.get(u,timeout=(2,3));r.raise_for_status();t=r.text
+  if "#EXTM3U" not in t:return False
+  if "#EXT-X-STREAM-INF" in t:
+   v=[l.strip() for l in t.splitlines() if l.strip() and not l.startswith("#")]
+   if not v:return False
+   r=s.get(up.urljoin(r.url,v[0]),timeout=(2,3));r.raise_for_status();t=r.text
+  return "#EXTINF" in t and "#EXT-X-ENDLIST" not in t
+ except Exception:return False
 def handoff(why,depth=None,fl=None):
- global stalled,got,cur,media,last,lag,pend,rseen,bad,gap,fst,lsw
+ global stalled,got,cur,media,last,lag,pend,rseen,bad,gap,fst,lsw,lpr,ost
  fl=fl or feeds()
  if len(fl)<2:
-  if not stalled:log(why+"; no backup stream on this channel, so staying on this feed")
+  if not stalled:ost=got;log(why+"; no backup stream on this channel, so staying on this feed")
   stalled=True;got=mono();return
- nxt=fl[(fl.index(cur)+1)%len(fl)] if cur in fl else fl[1]
+ if stalled and mono()-lpr<10:got=mono();return
+ lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
+ if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
+ cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
+ cand=[u for u in cand if fbad.get(u,[0])[0]<=mono()] or sorted(cand,key=lambda u:fbad.get(u,[0])[0])
+ for u in cand:
+  if mono()-pt>6:break
+  if probe(u):nxt=u;break
+  log("backup stream %d of %d is not answering; not trying it again for %.0fs"%(fl.index(u)+1,len(fl),mark(u)))
+ if nxt is None:
+  if not stalled:ost=got;log(why+"; no backup stream is answering right now, so staying on this feed")
+  stalled=True;got=mono();return
  log(why+"; switching to stream %d of %d"%(fl.index(nxt)+1,len(fl)));inc("sw")
- cur=nxt;gap=(gap+mono()-got) if gap is not None else ((mono()-got) if last is not None else None);media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono()
+ was=stalled
+ cur=nxt;gap=(mono()-ost) if was else ((gap+mono()-got) if gap is not None else ((mono()-got) if last is not None else None));media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono()
  if depth:gap=depth
  dq.clear();rq.clear();fst=lsw=mono();save()
 def bye():
@@ -875,7 +959,7 @@ def killall():
 for g in (15,2,1):signal.signal(g,lambda*a:(killall(),os._exit(0)))
 if rcur:cur=hsu(rcur)
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
-media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0;ph=0;dq=collections.deque();rq=collections.deque();fst=mono();lsw=-1e9;nsl=0
+media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();ost=got;tgt=10;lag=None;bad=set();ids={};nid=0;dead=0;ph=0;dq=collections.deque();rq=collections.deque();fst=mono();lsw=-1e9;nsl=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
 def join(segs):
  global dep
@@ -889,9 +973,40 @@ def cushlim():
 def watch():
  global xb,pk,lj
  if not chid.isdigit():return
- e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set()
+ e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set();tj=-1e9;jerr=set();jfail=False;og=None;jt=None;JF=("/data" if os.access("/data",os.W_OK) else "/tmp")+"/hlsloop-jobs-%s.json"%chid
  def say(k,m):
   if k not in said:said.add(k);log("viewer buffer: "+m)
+ def ext(rj):
+  nonlocal og,jfail
+  jw=requests.Session()
+  try:
+   with ql:rv=min(Qs[0]+max(wlead,0.0),(dep or 3*tgt)+tgt)
+   ad=min(int(rv+PM),180);now_=time.time()
+   if og is None:
+    try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
+    except Exception:og={}
+   def wog():
+    nonlocal og
+    og={a:b for a,b in og.items() if time.time()-b[1]<86400}
+    tf=JF+".%d.tmp"%os.getpid()
+    with open(tf,"w") as f:json.dump(og,f)
+    os.replace(tf,JF)
+   for jb in (jw.get(base+"/dvr/jobs",timeout=5).json() or []):
+    jid=str(jb.get("ID") or "")
+    if jid not in rj:continue
+    t1=float(jb.get("Time") or 0);du=float(jb.get("Duration") or 0)
+    if jid not in og:og[jid]=[du,now_];wog()
+    nd=int(og[jid][0]+ad)
+    if now_<t1+du-30 and nd>du+10:
+     try:
+      jb["Duration"]=nd
+      jw.put(base+"/dvr/jobs/"+up.quote(jid),json=jb,timeout=5).raise_for_status()
+      log("recording: %s on ch %s extended by %ds on top of its own padding (%ds for this stream running behind, %ds for the provider running behind the broadcast)"%(jb.get("Name") or jid,num,nd-int(og[jid][0]),int(rv),int(PM)))
+     except Exception as x:
+      if jid not in jerr:jerr.add(jid);log("recording: could not extend %s (%s)"%(jb.get("Name") or jid,str(x)[:80]))
+   jfail=False
+  except Exception as x:
+   if not jfail:jfail=True;log("recording: could not check or extend recordings (%s); will keep trying quietly"%str(x)[:80])
  try:
   import psycopg
   with psycopg.connect(dbname=e("POSTGRES_DB","dispatcharr"),user=e("POSTGRES_USER","dispatch"),password=e("POSTGRES_PASSWORD",""),host=e("POSTGRES_HOST","localhost"),port=int(e("POSTGRES_PORT","5432")),connect_timeout=3) as c:
@@ -908,7 +1023,7 @@ def watch():
      h=rd.hgetall("live:channel:%s:clients:%s"%(uid,m.decode()))
      if b"channels-dvr" in h.get(b"user_agent",b"").lower():base="http://%s:8089"%h[b"ip_address"].decode();break
     if not base:
-     if mono()-t0>120:say("nocd","off (no Channels DVR client on this stream)");return
+     if mono()-t0>120:say("nocd","waiting (no Channels DVR client on this stream yet)");time.sleep(30);continue
      time.sleep(5);continue
    if mono()-tmap>300:
     tmap=mono();num=dev=None;st=w.get(base+"/settings",timeout=5).json()
@@ -929,12 +1044,19 @@ def watch():
      dev=d;num=str(cl[hit[0]]["GuideNumber"]);say("map"+dev+num,"this stream is Channels DVR %s ch %s"%(dev,num));break
     if num is None:say("nomap","off for now (this channel is not in a Channels DVR source that matches the playlist)")
    if num is None:time.sleep(30);continue
-   k=0
-   for x in (w.get(base+"/dvr/activity",timeout=3).json().get("streams") or []):
+   k=0;nr=0;rj=set();act=w.get(base+"/dvr/activity",timeout=3).json()
+   for x in (act.get("streams") or []):
     tu=x.get("tuner") or {}
     if tu.get("device_id")==dev and str(tu.get("channel"))==num:k=max(k,int(tu.get("readers") or 1))
-   if k:seen=mono()
-   elif seen is None and mono()-t0>90:say("unseen","off (ch %s never showed up as playing in Channels DVR)"%num);return
+   for x in (act.get("recordings") or []):
+    tu=x.get("tuner") or {}
+    if tu.get("device_id")==dev and str(tu.get("channel"))==num and x.get("state")=="recording":
+     nr+=1;rj.add(str(x.get("job_id") or ""))
+   rj.discard("")
+   if rj and mono()-tj>30 and not (jt and jt.is_alive()):
+    tj=mono();jt=threading.Thread(target=ext,args=(set(rj),),daemon=True);jt.start()
+   if k or nr:seen=mono()
+   elif seen is None and mono()-t0>90:say("unseen","waiting (ch %s not playing in Channels DVR yet)"%num);time.sleep(30);continue
    if k and k>pk:
     room=max(clcap()-CL-xb,0.0);add=min(JB*(k-pk),room);xb+=add;lj=mono()
     log("viewer buffer: %d viewers on Channels DVR ch %s, sent the new viewer a %.0fs head start (lead now %.0fs, reserve %.0fs)"%(k,num,add,CL+xb,(dep or 3*tgt)-CL-xb)+("" if add>=JB*(k-pk) else ", reserve at its floor"))
@@ -947,7 +1069,7 @@ def watch():
   except Exception as x:
    fails+=1
    if fails==3:log("viewer buffer: Channels DVR not reachable (%s)"%str(x)[:80])
-   if not base and mono()-t0>120:return
+   if not base and mono()-t0>120:time.sleep(28)
   time.sleep(2)
 def stat():
  low=False;t0=mono()
@@ -988,7 +1110,7 @@ def enq(it):
  with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
 def writer():
  global wlast,wpart,oend,off,wlead,wb
- lead=wlead;t=mono();cpr=None;cpt=mono()
+ lead=wlead;t=mono();cpr=None;cpt=mono();cbv=None;cbt=mono()
  while run:
   try:
    now=mono();wb=now;lead=max(lead-(now-t),-3.0);t=now;wlead=lead
@@ -1001,10 +1123,12 @@ def writer():
     with ql:Q.popleft()
     if it[0]=="remux":
      if it[3] is not None:off=it[3]
-     remux(it[1]);lead=max(lead-3.0,-3.0)
+     remux(it[1])
     else:put(it[1])
     continue
-   dp=dep or 3*tgt;cl=min(max(CL,255868*it[2]/max(len(it[1]),1)+0.5)+xb,clcap())
+   dp=dep or 3*tgt;cb=max(CL,255868*it[2]/max(len(it[1]),1)+0.5)
+   cbv=cb if cbv is None else min(cb,cbv+0.02*(now-cbt));cbt=now
+   cl=min(cbv+xb,clcap())
    with ql:rmx=any(x[0]=="remux" for x in list(Q)[1:5])
    if rmx:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
@@ -1039,7 +1163,7 @@ while not gone():
   if v:media=up.urljoin(r.url,max(v)[1]);continue
   if "#EXT-X-ENDLIST" in L:
    ph+=1;handoff("provider is serving an offline placeholder")
-   z=5 if stalled else min(ph,10);rb=mono()+z;time.sleep(z)
+   z=5 if stalled else 0;rb=mono()+z;time.sleep(z)
    continue
   media=r.url;seq=0;hasseq=False;tgt=10;segs=[];key=None;mp=None;br=None;pe={};dur=0.0
   for x in L:
@@ -1065,7 +1189,7 @@ while not gone():
   rseen=None;err=0;e0=None;dead=0;w=min(max(tgt/2,1),5)
   if last is None:new=join(segs) if gap is None else segs[-max(1,min(len(segs),int(-(-gap//max(tgt,1))))):];lag=None
   elif segs[-1]["n"]<last:
-   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining");bad.clear();new=join(segs);lag=None;pend=True
+   if not ({q["p"].rsplit("/",1)[-1] for q in segs}&{x.rsplit("/",1)[-1] for x in seen}) or last-segs[-1]["n"]>50 or (lag is not None and mono()-lag>4*tgt):log("provider restarted the channel, rejoining at the live edge");bad.clear();k_=[i for i,q in enumerate(segs) if q["p"] in seen];new=segs[k_[-1]+1:] if k_ else segs[-max(2,min(len(segs),int(-(-(mono()-got)//max(tgt,1))))):];lag=None;pend=True;last=last if new else segs[-1]["n"]
    else:
     if lag is None:lag=mono();log("edge server is behind, waiting for it to catch up")
     new=[];media=None;w=1
@@ -1092,9 +1216,12 @@ while not gone():
     if cmap is not None:enq(["remux","new init segment",0,None]);sig=None
     i=s.get(q["m"],timeout=(3,5));i.raise_for_status();enq(["init",i.content,0]);cmap=q["m"]
    p0=pts0(d)
-   if pend:
+   if not pend and qend is not None and p0 is not None:
+    dj=p0+moff-qend
+    if 2<abs(dj)<WR-60:pend=True;log("timestamps jumped %.1fs inside the feed, joining it smoothly"%dj)
+   if pend and p0 is not None:
     pend=False
-    if p0 is not None and qend is not None:moff=qend-p0;enq(["remux","joining the backup stream seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
+    if qend is not None:moff=qend-p0;enq(["remux","joining the backup stream seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
    g=tsig(d)
    if g and sig and g!=sig:enq(["remux","stream layout changed",0,None]);cmap=None
    if g:sig=g
@@ -1104,6 +1231,7 @@ while not gone():
    last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   now=mono();SW=max(120.0,6*tgt)
+  if cur in fbad and last is not None and not stalled and now-fst>120 and now-got<2*tgt:fbad.pop(cur,None)
   with ql:qs=Qs[0]
   rq.append((now,qs+max(wlead,0.0)))
   while dq and now-dq[0][0]>SW:dq.popleft()
@@ -1159,15 +1287,17 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
   read at playback speed, with at most 60 s queued.
-- Everything else matches the HLS profile: gap-free remux at a switch, keepalive only while the
-  profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
+- Everything else matches the HLS profile: backups checked before switching, failed feeds left
+  alone for a while, smooth pacing through a switch, recording extensions (see
+  [Recordings](#recordings)), gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
   restart, no hammering on a dead channel (retries at least 5 seconds apart), Retry-After honoured.
 
 ### Requirements
 
 - Everything under the HLS profile's [Requirements](#requirements-1), except the provider part:
-- **Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension): an Xtream
-  Codes account, or an M3U account with `output=ts`. This profile does no conversion; an `.m3u8`
+- **Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension). **Use an
+  Xtream Codes account if you can** (see [Use an Xtream Codes account](#use-an-xtream-codes-account)),
+  or an M3U account with `output=ts`. This profile does no conversion; an `.m3u8`
   URL is refused with `this stream URL is HLS; use the HLS profile for it`.
 - Dispatcharr's output and the Channels DVR source's **Stream Format** stay on **MPEG-TS**, as for
   the HLS profile.
@@ -1192,6 +1322,8 @@ Messages start with `[tsloop stream]`.
 | `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
 | `provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see above). |
 | `...; switching to stream N of M` | Failover to the next backup. |
+| `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
+| `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and there is no backup; it keeps retrying. |
 | `output: no video to send for 3s, sending keepalive packets ...` / `output: video flowing again after Ns` | A gap was covered by keepalive packets. |
 | `reserve empty: ... playback will pause until video arrives` / `reserve refilled to Ns` | The provider fell behind for longer than the reserve covers. This matches visible buffering. |
@@ -1232,7 +1364,7 @@ except ImportError:print("[tsloop stream] python requests module not found",file
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=20.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False
+mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=20.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;PM=45.0;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
 hc={"r":0,"x":0,"f":0,"k":0.0}
 def log(m):
  for a,b in (("stream error","r"),("restarting remuxer","x"),("switching to stream","f")):
@@ -1322,13 +1454,13 @@ st="/tmp/tsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode())
 last={};dl={};rcur=None;wlead=0.0;prim=None;sl=threading.Lock();resumed=False;rg=0.0
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4:dl={int(k):v for k,v in j["dl"].items()};last=dict(dl);off=j.get("off",0.0);rcur=j.get("cur");prim=j.get("prim");xb=float(j.get("xb",0.0));vpk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));vlj=mono() if xb>JB else 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);resumed=True;rg=min(max(j.get("gage",0.0),0.0),FAILT);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4 and j.get("src")==src:dl={int(k):v for k,v in j["dl"].items()};last=dict(dl);off=j.get("off",0.0);rcur=j.get("cur");prim=j.get("prim");xb=float(j.get("xb",0.0));vpk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));vlj=mono() if xb>JB else 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);resumed=True;rg=min(max(j.get("gage",0.0),0.0),FAILT);log("resuming after Dispatcharr restart")
 except Exception:pass
 cur=rcur or src
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"src":src,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 wcur=cur
@@ -1360,17 +1492,46 @@ def feeds(quiet=False):
  for u in urls:
   if u not in out and XC.sub("/",u)!=XC.sub("/",src):out.append(u)
  return out
-stalled=False;pend=False;got=mono()-rg;lv=got;gap=None;dlv=False
+stalled=False;pend=False;got=mono()-rg;ost=got;lv=got;gap=None;dlv=False;fbad={};lpr=-1e9;prr=None;fst=mono()
+def mark(u):
+ b=fbad.get(u,[0,0]);fbad[u]=[mono()+min(60*2**b[1],600),b[1]+1];return fbad[u][0]-mono()
+def probe(u):
+ r=None
+ try:
+  r=s.get(u,stream=True,timeout=(2,3),allow_redirects=True);r.raise_for_status();ct=(r.headers.get("Content-Type") or "").lower()
+  if "html" in ct or "mpegurl" in ct or r.url.rsplit("/",1)[-1].lower().startswith("black."):raise ValueError("not a live MPEG-TS stream")
+  b=b"";t=mono();r.it=r.iter_content(65536)
+  for x in r.it:
+   b+=x
+   if len(b)>=188*9:
+    if any(all(b[i+188*k]==0x47 for k in range(8)) for i in range(188)):r.pk=b;return r
+    break
+   if mono()-t>3:break
+ except Exception:pass
+ if r is not None:r.close()
+ return None
 def handoff(why):
- global stalled,got,cur,pend,sticky,gap,dlv
+ global stalled,got,cur,pend,sticky,gap,dlv,lpr,prr,fst,ost
  fl=feeds()
  if len(fl)<2:
-  if not stalled:log(why+"; no backup stream on this channel, so staying on this feed")
+  if not stalled:ost=got;log(why+"; no backup stream on this channel, so staying on this feed")
   stalled=True;got=mono();return
- nxt=fl[(fl.index(cur)+1)%len(fl)] if cur in fl else fl[1]
+ if stalled and mono()-lpr<10:got=mono();return
+ lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
+ if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
+ cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
+ cand=[u for u in cand if fbad.get(u,[0])[0]<=mono()] or sorted(cand,key=lambda u:fbad.get(u,[0])[0])
+ for u in cand:
+  if mono()-pt>6:break
+  pr=probe(u)
+  if pr is not None:nxt=u;break
+  log("backup stream %d of %d is not answering; not trying it again for %.0fs"%(fl.index(u)+1,len(fl),mark(u)))
+ if nxt is None:
+  if not stalled:ost=got;log(why+"; no backup stream is answering right now, so staying on this feed")
+  stalled=True;got=mono();return
  log(why+"; switching to stream %d of %d"%(fl.index(nxt)+1,len(fl)))
- gap=(gap or 0.0)+mono()-got if (gap is not None or dlv) else None
- cur=nxt;pend=True;stalled=False;got=mono();sticky=None;dlv=False;hc["e"]=0
+ gap=(mono()-ost) if stalled else ((gap or 0.0)+mono()-got if (gap is not None or dlv) else None)
+ cur=nxt;prr=[nxt,pr];pend=True;stalled=False;got=mono();sticky=None;dlv=False;hc["e"]=0;fst=mono()
 def bye():
  global run
  run=0;save();killall();os._exit(0)
@@ -1384,15 +1545,46 @@ for g in (15,2,1):signal.signal(g,lambda*a:(killall(),os._exit(0)))
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=None;wput=mono()
 if prim is not None and prim in dl:qend=dl[prim]+off
 def enq(it):
- with ql:Q.append(it);Qs[0]+=it[2]
+ with ql:Q.append(it);Qs[0]+=it[2];nrx[0]+=it[0]=="remux"
 def clcap():
  return max(CL,dmx-STALL-RLOW)
 def watch():
  global xb,vpk,vlj,xo
  if not chid.isdigit():return
- e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set()
+ e=os.environ.get;w=requests.Session();base=cdvr;dev=None;num=None;tmap=-1e9;seen=None;t0=mono();fails=0;said=set();tj=-1e9;jerr=set();jfail=False;og=None;jt=None;JF=("/data" if os.access("/data",os.W_OK) else "/tmp")+"/tsloop-jobs-%s.json"%chid
  def say(k,m):
   if k not in said:said.add(k);log("viewer buffer: "+m)
+ def ext(rj):
+  nonlocal og,jfail
+  jw=requests.Session()
+  try:
+   with ql:rv=min(Qs[0]+max(wlead,0.0),RES+15.0)
+   ad=min(int(rv+PM),180);now_=time.time()
+   if og is None:
+    try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
+    except Exception:og={}
+   def wog():
+    nonlocal og
+    og={a:b for a,b in og.items() if time.time()-b[1]<86400}
+    tf=JF+".%d.tmp"%os.getpid()
+    with open(tf,"w") as f:json.dump(og,f)
+    os.replace(tf,JF)
+   for jb in (jw.get(base+"/dvr/jobs",timeout=5).json() or []):
+    jid=str(jb.get("ID") or "")
+    if jid not in rj:continue
+    t1=float(jb.get("Time") or 0);du=float(jb.get("Duration") or 0)
+    if jid not in og:og[jid]=[du,now_];wog()
+    nd=int(og[jid][0]+ad)
+    if now_<t1+du-30 and nd>du+10:
+     try:
+      jb["Duration"]=nd
+      jw.put(base+"/dvr/jobs/"+up.quote(jid),json=jb,timeout=5).raise_for_status()
+      log("recording: %s on ch %s extended by %ds on top of its own padding (%ds for this stream running behind, %ds for the provider running behind the broadcast)"%(jb.get("Name") or jid,num,nd-int(og[jid][0]),int(rv),int(PM)))
+     except Exception as x:
+      if jid not in jerr:jerr.add(jid);log("recording: could not extend %s (%s)"%(jb.get("Name") or jid,str(x)[:80]))
+   jfail=False
+  except Exception as x:
+   if not jfail:jfail=True;log("recording: could not check or extend recordings (%s); will keep trying quietly"%str(x)[:80])
  try:
   import psycopg
   with psycopg.connect(dbname=e("POSTGRES_DB","dispatcharr"),user=e("POSTGRES_USER","dispatch"),password=e("POSTGRES_PASSWORD",""),host=e("POSTGRES_HOST","localhost"),port=int(e("POSTGRES_PORT","5432")),connect_timeout=3) as c:
@@ -1409,7 +1601,7 @@ def watch():
      h=rd.hgetall("live:channel:%s:clients:%s"%(uid,m.decode()))
      if b"channels-dvr" in h.get(b"user_agent",b"").lower():base="http://%s:8089"%h[b"ip_address"].decode();break
     if not base:
-     if mono()-t0>120:say("nocd","off (no Channels DVR client on this stream)");return
+     if mono()-t0>120:say("nocd","waiting (no Channels DVR client on this stream yet)");time.sleep(30);continue
      time.sleep(5);continue
    if mono()-tmap>300:
     tmap=mono();num=dev=None;st=w.get(base+"/settings",timeout=5).json()
@@ -1430,12 +1622,19 @@ def watch():
      dev=d;num=str(cl[hit[0]]["GuideNumber"]);say("map"+dev+num,"this stream is Channels DVR %s ch %s"%(dev,num));break
     if num is None:say("nomap","off for now (this channel is not in a Channels DVR source that matches the playlist)")
    if num is None:time.sleep(30);continue
-   k=0
-   for x in (w.get(base+"/dvr/activity",timeout=3).json().get("streams") or []):
+   k=0;nr=0;rj=set();act=w.get(base+"/dvr/activity",timeout=3).json()
+   for x in (act.get("streams") or []):
     tu=x.get("tuner") or {}
     if tu.get("device_id")==dev and str(tu.get("channel"))==num:k=max(k,int(tu.get("readers") or 1))
-   if k:seen=mono()
-   elif seen is None and mono()-t0>90:say("unseen","off (ch %s never showed up as playing in Channels DVR)"%num);return
+   for x in (act.get("recordings") or []):
+    tu=x.get("tuner") or {}
+    if tu.get("device_id")==dev and str(tu.get("channel"))==num and x.get("state")=="recording":
+     nr+=1;rj.add(str(x.get("job_id") or ""))
+   rj.discard("")
+   if rj and mono()-tj>30 and not (jt and jt.is_alive()):
+    tj=mono();jt=threading.Thread(target=ext,args=(set(rj),),daemon=True);jt.start()
+   if k or nr:seen=mono()
+   elif seen is None and mono()-t0>90:say("unseen","waiting (ch %s not playing in Channels DVR yet)"%num);time.sleep(30);continue
    if k and k>vpk:
     room=min(max(clcap()-CL-xb,0.0),max(Qs[0]-STALL-RLOW,0.0));add=min(JB*(k-vpk),room);xb+=add;vlj=mono();xo=JB*(k-vpk)-add
     log("viewer buffer: %d viewers on Channels DVR ch %s, sent the new viewer a %.0fs head start (lead now %.0fs, reserve %.0fs)"%(k,num,add,CL+xb,max(Qs[0]-add,0.0))+("" if xo<=0 else ", %.0fs more as the reserve allows"%xo))
@@ -1452,17 +1651,15 @@ def watch():
   except Exception as x:
    fails+=1
    if fails==3:log("viewer buffer: Channels DVR not reachable (%s)"%str(x)[:80])
-   if not base and mono()-t0>120:return
+   if not base and mono()-t0>120:time.sleep(28)
   time.sleep(2)
 def writer():
  global dl,off,wlead,wcur,wput,wb,dmx
- lead=wlead;t=mono();sv=0.0;remp=False;dh=collections.deque();dt=0.0;ce=CL;tc=mono();fo=ff;rxt=-1e9;cr=0.0;ow=0.0
+ lead=wlead;t=mono();sv=0.0;remp=False;dh=collections.deque();dt=0.0;ce=max(CL,min(wlead,CL+xb));tc=mono();rxt=-1e9;pxb=xb
  while run:
   try:
    now=mono();wb=now;lead=max(lead-(now-t),-3.0);t=now;wlead=lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1 if mono()-rxt<10 else 0.1);rxt=mono();continue
-   if ff is not fo:fo=ff;nl=max(lead-3.0,-3.0);ow+=max(lead-nl-1.0,0.0);lead=nl;cr=now+5
-   if ow>0 and now>cr:x=min(ow,0.5*(now-cr));lead+=x;ow-=x;cr=now
    with ql:
     it=Q[0] if Q else None;qs=Qs[0]
     if it is None:Qs[0]=0.0
@@ -1475,13 +1672,13 @@ def writer():
     time.sleep(0.05);continue
    if remp and qs>=RLOW:remp=False;log("reserve refilled to %.0fs"%qs)
    if it[0]=="remux":
-    with ql:Q.popleft()
+    with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
    cd=max(ca-it[8],0.0)
-   ce=max(min(CL+xb,clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc));tc=now
+   rx=nrx[0]>0;ce=min(max(min(CL+xb+(RXL if rx else 0.0),clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc)),ce+(RXR if rx else RAMP)*(now-tc)+max(xb-pxb,0.0));tc=now;pxb=xb
    if cd>0 and lead>=ce and qs<=QMAX+30:time.sleep(0.02);continue
    put(d[it[7]:en]);it[6]=i+1;it[7]=en;it[8]=max(ca,it[8]);wput=mono();lead=min(lead+cd,ce+10.0);dl=sn;wcur=it[4]
    with ql:
@@ -1566,12 +1763,15 @@ def conn(r):
    else:out+=fix(p)
   if adv>0 and not hc.get("s"):hc["s"]=1;log("input: first video received from %s, building the reserve"%up.urlsplit(cur).netloc)
   if adv>0 and hc.get("e"):log("input: video back after %d stream errors (reserve %.1fs)"%(hc["e"],Qs[0]));hc["e"]=0
-  if adv>0:got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
+  if adv>0:
+   got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
+   if cur in fbad and got-fst>120:fbad.pop(cur,None)
   if out:enq(["seg",bytes(out),adv,dict(last),cur,ix,0,0,0.0])
   if jump is not None and jump<0:raise ValueError("timeline jumped %.0fs inside the stream"%jump)
  def rdch():
   nonlocal fin
-  it=r.iter_content(65536)
+  it=getattr(r,"it",None) or r.iter_content(65536)
+  if getattr(r,"pk",b""):yield r.pk
   while True:
    try:c=next(it)
    except StopIteration:
@@ -1694,19 +1894,25 @@ while not gone():
  try:
   url=sticky if usest and sticky else cur;usest=False
   rto=STALL if (stalled and Qs[0]<=RLOW) or Qs[0]<=0 else max(4.0,min(STALL,Qs[0]-RLOW))
-  try:r=s.get(url,stream=True,timeout=(3,rto),allow_redirects=True);r.raise_for_status()
-  except Exception as x:
-   if url!=cur:sticky=None
-   rs=getattr(x,"response",None)
-   if rs is not None:rs.close()
-   raise
+  if prr and prr[0]==url:
+   r=prr[1];prr=None
+   try:r.raw._fp.fp.raw._sock.settimeout(rto)
+   except Exception:pass
+  else:
+   if prr:prr[1].close();prr=None
+   try:r=s.get(url,stream=True,timeout=(3,rto),allow_redirects=True);r.raise_for_status()
+   except Exception as x:
+    if url!=cur:sticky=None
+    rs=getattr(x,"response",None)
+    if rs is not None:rs.close()
+    raise
   ct=(r.headers.get("Content-Type") or "").lower()
   if "mpegurl" in ct:
    r.close()
    if cur not in warned:log("this stream URL is HLS; use the HLS profile for it");warned.add(cur)
    raise ValueError("stream URL is HLS, not MPEG-TS")
   if r.url.rsplit("/",1)[-1].lower().startswith("black."):
-   r.close();ph+=1;handoff("provider is serving an offline placeholder");dl_=5 if stalled else min(ph,10);rb=mono()+dl_;time.sleep(dl_);continue
+   r.close();ph+=1;handoff("provider is serving an offline placeholder");dl_=5 if stalled else 0;rb=mono()+dl_;time.sleep(dl_);continue
   if err>0:hc["e"]=hc.get("e",0)+err
   err=0;e0=None;sticky=r.url if url==cur and r.url!=cur else None
   try:dur,media=conn(r)
@@ -1715,7 +1921,7 @@ while not gone():
   if media<15 and dur<60:short+=1
   else:short=0
   if short>=3:
-   short=0;ph+=1;handoff("stream keeps ending after a few seconds (offline placeholder?)");dl_=5 if stalled else min(ph,10);rb=mono()+dl_;time.sleep(dl_);continue
+   short=0;ph+=1;handoff("stream keeps ending after a few seconds (offline placeholder?)");dl_=5 if stalled else 0;rb=mono()+dl_;time.sleep(dl_);continue
   raise ValueError("stream ended")
  except Exception as e:
   if gone():break
