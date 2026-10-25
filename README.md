@@ -496,7 +496,7 @@ encoder does:
 - **Paced by video timestamps.** Video leaves the profile at exactly real time, timed by each
   frame's timestamp rather than by bytes, so players receive it smoothly and every device on a
   shared tuner gets the same stream.
-- **A small head start for the players, sized for Channels DVR.** One viewer gets about 1 second
+- **A small head start for the players, sized for Channels DVR.** One viewer gets about 4 seconds
   ahead (more on low-bitrate channels, so Dispatcharr's ~256 KB chunks never leave the player
   short). Every time another Channels DVR device joins the channel, including one rejoining
   after another left, the profile sends a 5-second head start out of its reserve. Channels DVR
@@ -574,8 +574,8 @@ use a cushion that built up in the first player. The profile handles this by kee
 on the server and sizing what it hands out to the devices actually watching:
 
 1. **First tune.** The profile joins the provider's whole playlist window, about 60 seconds of
-   video on 10-second segments. It sends about 1 second ahead of real time to Channels DVR and
-   keeps the other ~59 seconds as its reserve.
+   video on 10-second segments. It sends about 4 seconds ahead of real time to Channels DVR and
+   keeps the other ~56 seconds as its reserve.
 2. **Steady state.** Video goes out at exactly real time, paced by its timestamps. When the
    provider is late, the reserve covers the wait; when the provider catches up, the profile
    downloads the missed segments quickly and the reserve refills. Viewers don't see either.
@@ -603,15 +603,15 @@ Example on a channel with 10-second segments:
 
 | What happens | Lead in the players | Reserve in the profile |
 |---|---|---|
-| TV tunes the channel | 1 s | 59 s |
-| Laptop joins | 6 s | 54 s |
-| Laptop leaves | 6 s | 54 s |
-| Laptop joins again | 11 s | 49 s |
+| TV tunes the channel | 4 s | 56 s |
+| Laptop joins | 9 s | 51 s |
+| Laptop leaves | 9 s | 51 s |
+| Laptop joins again | 14 s | 46 s |
 | Phone joins, then more joins over the evening | up to 40 s | down to the 20 s floor |
 | No joins for 2 minutes, reserve under 30 s | eases down by about 1% | rebuilds to 30 s |
 
 If the profile can't identify the channel in Channels DVR (see **Finds the channel in Channels DVR on its own** above), it doesn't count viewers
-and every device gets the single-viewer 1-second lead. Playback is otherwise unaffected.
+and every device gets the single-viewer 4-second lead. Playback is otherwise unaffected.
 
 ### Recordings
 
@@ -787,7 +787,7 @@ def hsu(u):return HSX.sub(r"\1.m3u8",u or "",count=1)
 if HSX.search(src):src=hsu(src);print("[hlsloop stream] input: provider stream URL is MPEG-TS; using its HLS form",file=sys.stderr,flush=True)
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False;DEADT=60.0;PM=45.0
+mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=4.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False;DEADT=60.0;PM=45.0
 LG=threading.Lock();CNT=collections.Counter();CK=threading.Lock();ns=0
 def inc(k,v=1):
  with CK:CNT[k]+=v
@@ -1307,7 +1307,7 @@ way: it counts the devices watching and refreshes an out-of-date Channels DVR so
 Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent video (about
 20-26 seconds on the provider it was tested with) and then runs at real time. So:
 
-- **The reserve is the connect burst.** The profile keeps it queued, sends about 1 second ahead to
+- **The reserve is the connect burst.** The profile keeps it queued, sends about 3 seconds ahead to
   Channels DVR, and paces the rest out at exactly real time on the video clock (per video frame
   group; audio-only channels use the audio clock).
 - **Reconnects are stitched, not refetched.** A reconnect re-sends video that was already sent. The
@@ -1405,7 +1405,7 @@ except ImportError:print("[tsloop stream] python requests module not found",file
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
-mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=60.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;sl0=0.0;sl1=0.0;PM=45.0;avok=None;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
+mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=3.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=60.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False;sl0=0.0;sl1=0.0;PM=45.0;avok=None;RAMP=0.02;RXL=1.5;RXR=0.15;nrx=[0]
 hc={"r":0,"x":0,"f":0,"k":0.0}
 def log(m):
  for a,b in (("stream error","r"),("restarting remuxer","x"),("switching to stream","f")):
