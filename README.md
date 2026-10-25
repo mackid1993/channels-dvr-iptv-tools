@@ -535,7 +535,7 @@ encoder does:
   restarts the stream, and the new copy resumes where the old one stopped. After a stuck fetch it
   goes straight to the channel's next backup instead of the same stuck feed.
 - **Tells a lagging server from a channel restart**, and **backs off politely** on
-  connection-limit responses (503, 509, 429, honouring `Retry-After` up to 30 seconds).
+  connection-limit responses (503, 509, 429, honoring `Retry-After` up to 30 seconds).
 - **Recordings keep their ending.** See [Recordings](#recordings-1).
 - **No re-encoding.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
   unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are supported.
@@ -1290,7 +1290,7 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
 - Everything else matches the HLS profile: backups checked before switching, failed feeds left
   alone for a while, smooth pacing through a switch, recording extensions (see
   [Recordings](#recordings)), gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
-  restart, no hammering on a dead channel (retries at least 5 seconds apart), Retry-After honoured.
+  restart, no hammering on a dead channel (retries at least 5 seconds apart), Retry-After honored.
 
 ### Requirements
 
