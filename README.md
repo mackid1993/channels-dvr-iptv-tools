@@ -308,7 +308,7 @@ profile exists for providers that don't offer HLS.
 
 | | HLS profile (recommended) | MPEG-TS profile (fallback) |
 |---|---|---|
-| Provider stream URLs | `.m3u8` | `.ts` (or no extension) |
+| Provider stream URLs | `.m3u8`; Xtream `.ts` addresses are switched to `.m3u8` automatically | `.ts`; Xtream `.m3u8` addresses are switched to `.ts` automatically |
 | Reserve held in Dispatcharr | about 60 s (the provider's whole playlist window) | about 20-26 s (only what the provider bursts on connect) |
 | Provider hiccup or late video | Re-fetches the missed segments from the playlist; nothing is lost if it is still listed (usually about a minute) | Only the reserve covers it; video from an outage longer than the reconnect overlap is lost for good |
 | Reconnects | Always continue the same timeline | Usually seamless (overlap is removed), but the provider can land on a different timeline (about 1 in 6 on our test provider), which shows as a small skip or repeat |
@@ -318,15 +318,37 @@ profile exists for providers that don't offer HLS.
 | Delay behind live | about 60 s | about 20 s |
 | Log prefix | `[hlsloop stream]` | `[tsloop stream]` |
 
-Both send **MPEG-TS** to Channels DVR. Only what they read from the provider differs. Run one
-profile per channel: set the one that matches your provider as Dispatcharr's default, or set it per
-channel if your provider mixes formats. Each profile refuses the other format with a clear log line
-(`response is not an m3u8 playlist` / `stream URL is HLS, not MPEG-TS`), so a mix-up shows up at
-once.
+Both send **MPEG-TS** to Channels DVR. Only what they read from the provider differs.
 
-To switch a channel between them, change its **Stream Profile** (or the default) and retune the
-channel in Channels DVR. The provider's URLs must match: switch the M3U account in Dispatcharr to
-HLS or MPEG-TS output and refresh it.
+### One account, either profile (Xtream providers)
+
+On Xtream-style providers every live channel exists in both formats at the same address, differing
+only in the ending:
+
+```
+http://provider/live/<user>/<pass>/<id>.m3u8   (HLS)
+http://provider/live/<user>/<pass>/<id>.ts     (MPEG-TS)
+```
+
+Both profiles use this. **Whatever ending Dispatcharr has stored, each profile switches it to the
+format it needs before connecting**: the HLS profile turns `.ts` into `.m3u8`, the MPEG-TS profile
+turns `.m3u8` into `.ts`. The same happens for every backup stream and after a Dispatcharr
+restart. Each logs it once per tune (`input: provider stream URL is MPEG-TS; using its HLS form`,
+or the reverse). Only `/live/<user>/<pass>/<number>` addresses are changed; anything else is left
+alone.
+
+What this means for you:
+
+- **Your M3U account format doesn't matter.** An **Xtream Codes** account (Dispatcharr stores
+  `.ts` addresses), or an M3U URL with `output=m3u8` or `output=ts`, all work with both profiles.
+- **Switching between HLS and TS is one setting.** Change the channel's **Stream Profile** (or the
+  default) and retune in Channels DVR. You don't touch or refresh the M3U account.
+- **If your provider's M3U download is slow, use an Xtream Codes account.** Dispatcharr gives up on
+  an M3U download that sends nothing for 60 seconds, and some providers' `get.php` takes longer than
+  that to build the list, so the refresh fails every time. Xtream Codes loads the channel list from
+  `player_api.php` instead, which is usually far faster. Use the server address only
+  (`http://provider`), with the username and password in their own fields, and make sure they are
+  the same line's pair.
 
 ## Dispatcharr stream profile for Channels DVR
 
@@ -504,8 +526,11 @@ it at its default.
   installed. It reads each channel's UUID and backup streams from Dispatcharr's own database, and
   its client list from Dispatcharr's Redis, using settings Dispatcharr already passes to its
   stream processes.
-- **Your provider's stream URLs must be HLS**, ending in `.m3u8`. This is only what Dispatcharr
-  receives from the provider; what it sends to Channels DVR stays MPEG-TS. Check under **Streams** in
+- **Your provider must offer HLS** for the channels. On Xtream providers, `.ts` addresses
+  (including every Xtream Codes account) are switched to their `.m3u8` form automatically (see
+  [One account, either profile](#one-account-either-profile-xtream-providers)). Other providers'
+  stream URLs must end in `.m3u8`. This is only what Dispatcharr receives from the provider; what it
+  sends to Channels DVR stays MPEG-TS. Check under **Streams** in
   Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
   HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
   fails with `response is not an m3u8 playlist` in the Dispatcharr log; keep those channels on a
@@ -562,6 +587,7 @@ with `[hlsloop stream]`:
 
 | Message | Meaning |
 |---|---|
+| `input: provider stream URL is MPEG-TS; using its HLS form` | Dispatcharr had the Xtream `.ts` address; the profile reads the `.m3u8` form instead. Normal with Xtream Codes accounts. |
 | `viewer buffer: this stream is Channels DVR <source> ch N` | The profile found this channel in Channels DVR. |
 | `viewer buffer: N viewers on Channels DVR ch N, sent the new viewer a Ns head start (lead now Ns, reserve Ns)` | Another device joined; every device on the tuner got the extra head start. `reserve at its floor` means the reserve was too low to give the full 5 seconds. |
 | `viewer buffer: reserve rebuilt to Ns` | The reserve finished refilling after joins used part of it. |
@@ -620,6 +646,9 @@ retune. You can delete the profile afterwards.
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found",file=sys.stderr);sys.exit(1)
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
+HSX=re.compile(r"(/live/[^/?]+/[^/?]+/[0-9]+)\.ts(?=$|\?)")
+def hsu(u):return HSX.sub(r"\1.m3u8",u or "",count=1)
+if HSX.search(src):src=hsu(src);print("[hlsloop stream] input: provider stream URL is MPEG-TS; using its HLS form",file=sys.stderr,flush=True)
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
 mono=time.monotonic;BUSY=(429,503,509);AV={1,2,3,4,6,15,17,27,36,129,135};run=1;CL=1.0;JB=5.0;xb=0.0;pk=1;lj=0.0;RF=30.0;WR=95443.717688888;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=time.monotonic();RBT=45.0;skf=False;rstk=False
@@ -759,7 +788,7 @@ def feeds():
   import psycopg
   e=os.environ.get
   with psycopg.connect(dbname=e("POSTGRES_DB","dispatcharr"),user=e("POSTGRES_USER","dispatch"),password=e("POSTGRES_PASSWORD",""),host=e("POSTGRES_HOST","localhost"),port=int(e("POSTGRES_PORT","5432")),connect_timeout=3) as c:
-   urls=[u for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order",(int(chid),)).fetchall() if u]
+   urls=[hsu(u) for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order",(int(chid),)).fetchall() if u]
  except Exception as x:log("could not read backup streams (%s)"%x);return [src]
  m=XC.search(src)
  if m:urls=[XC.sub("/%s/%s/%s/"%(mm.group(1),m.group(2),m.group(3)),u,count=1) if (mm:=XC.search(u)) else u for u in urls]
@@ -788,7 +817,7 @@ def killall():
   try:p.kill()
   except Exception:pass
 for g in (15,2,1):signal.signal(g,lambda*a:(killall(),os._exit(0)))
-if rcur:cur=rcur
+if rcur:cur=hsu(rcur)
 bw=re.compile(r"(?<![A-Z-])BANDWIDTH=(\d+)")
 media=None;err=0;e0=None;gap=None;fresh=mono();got=mono();tgt=10;lag=None;bad=set();ids={};nid=0;dead=0;ph=0;dq=collections.deque();rq=collections.deque();fst=mono();lsw=-1e9;nsl=0
 Q=collections.deque();Qs=[0.0];ql=threading.Lock();moff=off;qend=oend
@@ -1081,8 +1110,11 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
 ### Requirements
 
 - Everything under the HLS profile's [Requirements](#requirements-1), except the provider part:
-- **Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension). With an
-  `.m3u8` URL the profile logs `this stream URL is HLS; use the HLS profile for it`.
+- **Your provider must offer MPEG-TS** for the channels. On Xtream providers, `.m3u8` addresses are
+  switched to their `.ts` form automatically (see
+  [One account, either profile](#one-account-either-profile-xtream-providers)), so the M3U account
+  can stay on HLS. Any other HLS URL is refused with `this stream URL is HLS; use the HLS profile for
+  it`.
 - Dispatcharr's output and the Channels DVR source's **Stream Format** stay on **MPEG-TS**, as for
   the HLS profile.
 
@@ -1098,6 +1130,7 @@ Messages start with `[tsloop stream]`.
 
 | Message | Meaning |
 |---|---|
+| `input: provider stream URL is HLS; using its MPEG-TS form` | Dispatcharr had the Xtream `.m3u8` address; the profile reads the `.ts` form instead. |
 | `input: first video received from <host>, building the reserve` | The stream started. |
 | `viewer buffer: ...` | Same as the HLS profile (channel found, head start sent, rebuild). `head start dropped` means the reserve didn't have room. |
 | `stream error (...); reconnect N in Ns` then `input: video back after N stream errors (reserve Ns)` | The connection dropped and came back. Normal now and then. |
@@ -1144,6 +1177,9 @@ stuck feeds and the tuner-sharing head start.
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found",file=sys.stderr);sys.exit(1)
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
+TSX=re.compile(r"(/live/[^/?]+/[^/?]+/[0-9]+)\.m3u8(?=$|\?)")
+def tsu(u):return TSX.sub(r"\1.ts",u or "",count=1)
+if TSX.search(src):src=tsu(src);print("[tsloop stream] input: provider stream URL is HLS; using its MPEG-TS form",file=sys.stderr,flush=True)
 FF=shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
 s=requests.Session();s.headers["User-Agent"]=ua
 mono=time.monotonic;BUSY=(429,503,509);run=1;WR=95443.717688888;CL=1.0;JB=5.0;xb=0.0;vpk=1;vlj=0.0;xo=0.0;dmx=0.0;STALL=8.0;FAILT=20.0;QUIET=4.0;SIL=6.0;RLOW=4.0;RES=20.0;QMAX=60.0;le={};pd=0.04;fq=collections.deque();fql=threading.Lock();shut={};wb=time.monotonic();rb=wb;skf=False;rstk=False
@@ -1238,7 +1274,7 @@ try:
  j=json.load(open(st))
  if time.time()-j["t"]<4:dl={int(k):v for k,v in j["dl"].items()};last=dict(dl);off=j.get("off",0.0);rcur=j.get("cur");prim=j.get("prim");xb=float(j.get("xb",0.0));vpk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));vlj=mono() if xb>JB else 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);resumed=True;rg=min(max(j.get("gage",0.0),0.0),FAILT);log("resuming after Dispatcharr restart")
 except Exception:pass
-cur=rcur or src
+cur=tsu(rcur) if rcur else src
 def save():
  try:
   with sl:
@@ -1264,7 +1300,7 @@ def feeds(quiet=False):
   import psycopg
   e=os.environ.get
   with psycopg.connect(dbname=e("POSTGRES_DB","dispatcharr"),user=e("POSTGRES_USER","dispatch"),password=e("POSTGRES_PASSWORD",""),host=e("POSTGRES_HOST","localhost"),port=int(e("POSTGRES_PORT","5432")),connect_timeout=3) as c:
-   urls=[u for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order",(int(chid),)).fetchall() if u]
+   urls=[tsu(u) for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order",(int(chid),)).fetchall() if u]
  except Exception as x:
   if not quiet:log("could not read backup streams (%s)"%x)
   return [src]
