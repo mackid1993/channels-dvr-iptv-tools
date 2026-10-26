@@ -1333,8 +1333,7 @@ def writer():
     continue
    dp=rtgt();cb=max(CL,255868*it[2]/max(len(it[1]),1)+0.5)
    cbv=cb if cbv is None else min(cb,cbv+0.02*(now-cbt));cbt=now
-   cl=min(cbv+xb,clcap())
-   if TRANSCODE:cl=max(cl,min(TC_LEAD,clcap()))
+   cl=min(max(cbv,TC_LEAD if TRANSCODE else 0.0)+xb,clcap())
    with ql:rmx=any(x[0]=="remux" for x in list(Q)[1:5])
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
