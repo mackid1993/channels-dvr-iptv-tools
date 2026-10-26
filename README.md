@@ -39,6 +39,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 - [Transcoding (optional)](#transcoding-optional)
   - [Why turn it on](#why-turn-it-on)
   - [Settings](#settings)
+  - [Why 3%](#why-3)
   - [Use a GPU](#use-a-gpu)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
@@ -478,16 +479,46 @@ reserve after a long outage. Without it, there is little more the profiles can d
 a different frame rate can upset the player, and a drained reserve only comes back on a retune.
 
 > [!IMPORTANT]
-> **With transcoding on, playback can run 3% slower for a while after a long outage.** If a
-> provider outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile
-> plays video 3% slower, with the audio pitch unchanged, until the reserve is back to three
-> quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it returns to real speed. That refills
-> about 1.8 s of reserve per minute, so a refill takes about 8 to 25 minutes on HLS and 4 to 9
-> minutes on MPEG-TS, depending on how far the reserve dropped. The rest of the
-> time video plays at its real speed. The speed changes while the encoder keeps running, so there
-> is no restart and no audio gap. This only happens with transcoding on: without it, slowing playback would mean
-> stretching audio that is only copied, which causes crackle or drift, so on the normal path the
-> reserve only comes back on a retune.
+> **With transcoding on, playback runs 3% slower for a while after a long outage.** If a provider
+> outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile switches
+> to 3% slower playback, with the audio pitch unchanged, and stays there until the reserve is back
+> to three quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it switches back to real speed.
+> The rest of the time video plays at its real speed.
+>
+> - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 25 minutes on
+>   HLS and 4 to 9 minutes on MPEG-TS, depending on how far the reserve dropped.
+> - **No interruption:** the speed is changed in the running encoder, not by restarting it, so
+>   there is no gap in the picture or the sound at either switch.
+> - **Rate:** a single fixed rate of 3%. It doesn't vary with what's on screen.
+> - **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would
+>   mean stretching its timestamps, which causes crackle or drift. On the normal path the reserve
+>   only comes back on a retune.
+>
+> See [Why 3%](#why-3) for the research behind the rate.
+
+### Why 3%
+
+The rate is a trade-off between refilling quickly and staying below what people can notice.
+
+- **Motion.** In lab experiments, people comparing two moving patterns side by side can just tell
+  speeds apart when they differ by roughly 5 to 10% (McKee, 1981; De Bruyn and Orban, 1988).
+  That's the best case: ideal conditions and direct comparison. Judging one speed on its own, as
+  a TV viewer does, is harder. 3% sits below the best-case threshold.
+- **Speech.** Listeners notice a change in speaking tempo at about 5%, and slowdowns are harder to
+  notice than speedups (Quene, 2007). Pitch is corrected, so voices don't drop in pitch.
+- **Broadcast precedent.** For decades, 50 Hz countries played 24 fps films at 25 fps, which is
+  4.2% faster, to hundreds of millions of viewers. The faster motion went largely unnoticed; the
+  raised pitch was what people noticed, and pitch-corrected versions drew few complaints.
+  Broadcast profanity-delay units such as Eventide's BD600 rebuild their delay the same way, at a
+  rate their maker describes as subtle and transparent.
+- **Where it can show.** Music is less forgiving: tempo changes of around 3% can be noticed, and
+  trained musicians notice less. A second screen showing the same channel in real time will
+  drift away by about 1.8 s a minute. And someone who knows the slowdown is on and is watching for
+  it may believe they see it; the fair test is a blind comparison.
+
+3% stays under the motion and speech thresholds and under both broadcast precedents, while
+refilling a typical outage in minutes rather than an hour. The figures above come from the cited
+studies and are approximate.
 
 ### Why turn it on
 
@@ -916,7 +947,7 @@ retune. You can delete the profile afterwards.
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
 # provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged, eased in without restarting) until the reserve is
+# (pitch unchanged, switched live, no restart) until the reserve is
 # back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
@@ -1652,7 +1683,7 @@ stuck feeds and the tuner-sharing head start.
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
 # provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged, eased in without restarting) until the reserve is
+# (pitch unchanged, switched live, no restart) until the reserve is
 # back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
