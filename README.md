@@ -37,9 +37,9 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 - [Recordings](#recordings)
 - [Files the profiles write](#files-the-profiles-write)
 - [Transcoding (optional)](#transcoding-optional)
+  - [Why 3%](#why-3)
   - [Why turn it on](#why-turn-it-on)
   - [Settings](#settings)
-  - [Why 3%](#why-3)
   - [Use a GPU](#use-a-gpu)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
@@ -88,6 +88,8 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 | [`dispatcharr_backup_streams.py`](dispatcharr_backup_streams.py) | Desktop app. Finds other feeds of each channel and adds them as backup streams through Dispatcharr's API. | Dispatcharr |
 | [HLS stream profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) (in this README) | **Recommended.** A Dispatcharr stream profile for Channels DVR, for providers that send HLS (`.m3u8`): holds the buffer, paces the stream, sizes the head start for the devices watching, and fails over. | Dispatcharr + Channels DVR |
 | [MPEG-TS stream profile](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr) (in this README) | The same for providers that only send raw MPEG-TS (`.ts`). Use it only when your provider has no HLS. | Dispatcharr + Channels DVR |
+| [`stream_profiles/`](stream_profiles) | Readable source of the two stream profiles (`hlsloop.py`, `tsloop.py`). The blocks you paste from this README are generated from these files. | Reading and editing the profiles |
+| [`scripts/`](scripts) | `build-profiles.sh` and `minify_profile.py`, which turn the sources into the pasteable blocks. GitHub Actions runs them on every push and commits the updated README. | Maintainers |
 
 The two station ID apps match channels the same way. They differ only in where the channels come from and
 how the IDs are saved. Use the app for whichever manager you run.
@@ -458,16 +460,17 @@ little end padding for those channels yourself.
 
 ## Files the profiles write
 
-Both profiles keep two kinds of small files inside the Dispatcharr container. Nothing else is
+Both profiles keep a few small files inside the Dispatcharr container. Nothing else is
 written, and nothing is written outside the container.
 
 | File | Where | What's in it | Why | Cleanup |
 |---|---|---|---|---|
 | `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
+| `hlsloop-hw.txt`, `tsloop-hw.txt` | `/tmp` | The encoder transcoding picked (`vaapi`, `nvenc` or `cpu`). A few bytes. | So the encoder test runs once, not on every tune. Only written with transcoding on. | Re-checked when it is more than an hour old; `/tmp` is cleared whenever the Dispatcharr container restarts. |
 | `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten about once a second while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
 
-To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-*.json
-/tmp/tsloop-*.json` inside the container) while nothing is playing.
+To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-* /tmp/tsloop-*`
+inside the container) while nothing is playing.
 
 ## Transcoding (optional)
 
@@ -486,8 +489,10 @@ a different frame rate can upset the player, and a drained reserve only comes ba
 >
 > - **Two clean switches per refill.** The encoder is restarted once when the slowdown starts and
 >   once when it ends, with the speed set from the first frame. Nothing is changed in a running
->   encoder, so audio and video can't drift apart. On MPEG-TS the restart waits for the next
->   keyframe and corrects for where the audio sits in the stream, so the picture doesn't pause.
+>   encoder, so audio and video can't drift apart. Each restart waits for the next keyframe and
+>   continues the timeline from the timestamps already sent, correcting for where the audio sits
+>   in the stream, so the picture doesn't pause. This works whether or not the provider's HLS
+>   segments start on keyframes.
 > - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 17 minutes on
 >   HLS and 3 to 5 minutes on MPEG-TS.
 > - **What you might see:** while it runs, a 60 fps source repeats one frame about twice a second.
@@ -514,7 +519,7 @@ The rate is a trade-off between refilling quickly and staying below what people 
   Broadcast profanity-delay units such as Eventide's BD600 rebuild their delay the same way, at a
   rate their maker describes as subtle and transparent.
 - **Where it can show.** Music is less forgiving: tempo changes of around 3% can be noticed, and
-  trained musicians notice less. A second screen showing the same channel in real time will
+  trained musicians notice smaller changes than other listeners. A second screen showing the same channel in real time will
   drift away by about 1.8 s a minute. And someone who knows the slowdown is on and is watching for
   it may believe they see it; the fair test is a blind comparison.
 
@@ -746,7 +751,8 @@ on the server and sizing what it hands out to the devices actually watching:
    the profile sends video about 1% slower than real time. The players drain their extra
    cushion a little faster than it's topped up, so it moves back into the reserve: about 10
    seconds every 17 minutes. It stops when the reserve is back to 30 seconds, or when the
-   players' lead is down to one join's worth (about 6 seconds). A 1% speed change is too small
+   players' lead is down to one join's worth (the single-viewer lead plus 5 seconds, about 9
+   seconds). A 1% speed change is too small
    to see or hear, and the output never stops.
 8. **Channel stops.** When the last device leaves, Dispatcharr ends the stream. The next tune
    starts fresh with the full reserve.
@@ -895,6 +901,7 @@ with `[hlsloop stream]`:
 | `reserve: empty, video now arrives only as fast as the provider publishes it` / `reserve: refilled to Ns` | The provider fell behind for longer than the reserve covers. This is the line that matches visible buffering. |
 | `input: fetch loop stuck for Ns, stopping keepalive so Dispatcharr restarts the stream` | The provider connection hung; Dispatcharr restarts the stream. |
 | `the previous process got stuck reading this feed; switching to stream N of M` | After that restart, the profile moved to the next backup. |
+| `restarting remuxer: reserve down to Ns; playing 3 percent slower, pitch unchanged, until it is back to Ns` / `restarting remuxer: reserve back to Ns; back to real speed` | Transcoding only: a refill started or finished (see [Transcoding (optional)](#transcoding-optional)). |
 | `status: main stream, reserve Ns, client lead Ns, ... last 10 min: N playlist retries, N catch-ups, N switches, Ns keepalive` | A summary every 10 minutes. A healthy session shows a full reserve and few or no switches. |
 
 Dispatcharr's `Stream unhealthy - no data for 10s` warning should not appear for streams using
@@ -1599,7 +1606,7 @@ Messages start with `[tsloop stream]`.
 |---|---|
 | `input: first video received from <host>, building the reserve` | The stream started. |
 | `viewer buffer: ...` | Same as the HLS profile (channel found, head start sent, rebuild). `head start dropped` means the reserve didn't have room. |
-| `stream error (...); reconnect N in Ns` then `input: video back after N stream retries (reserve Ns)` | The connection dropped and came back. Normal now and then. |
+| `stream error (...); reconnect N in Ns` then `input: video back after N reconnects (reserve Ns)` | The connection dropped and came back. Normal now and then. |
 | `reconnected, dropping Ns already sent (reserve Ns)` | A reconnect overlapped what was sent; the repeat was removed. Normal. |
 | `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
 | `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
@@ -1610,8 +1617,9 @@ Messages start with `[tsloop stream]`.
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and there is no backup; it keeps retrying. |
 | `output: no video to send for 3s, sending keepalive packets ...` / `output: video flowing again after Ns` | A gap was covered by keepalive packets. |
 | `reserve empty: ... playback will pause until video arrives` / `reserve refilled to Ns` | The provider fell behind for longer than the reserve covers. This matches visible buffering. |
-| `output: stopped for Ns and the reader is stuck; no keepalive, so Dispatcharr can restart the stream` | The provider connection hung; Dispatcharr restarts the stream, and the new copy goes to the next backup (`the previous process got stuck reading this feed`). |
+| `output: stopped for Ns and the reader is stuck; no keepalive, so Dispatcharr can restart the stream` (or `the writer is stuck`) | The provider connection hung; Dispatcharr restarts the stream, and the new copy goes to the next backup (`the previous process got stuck reading this feed`). |
 | `input stream is arriving faster than real time ...` | Flood protection kicked in (usually an offline channel's placeholder clip). |
+| `restarting remuxer: reserve down to Ns; playing 3 percent slower ...` / `... back to real speed` | Transcoding only: a refill started or finished, as in the HLS profile. |
 | `status: stream N of M, reserve Ns, client lead Ns, ... last 10 min: N stream retries, N remuxes, N failovers, Ns keepalive` | A summary every 10 minutes. |
 
 **A healthy session** shows the first-video line, the viewer-buffer lines, and a `status:` line every
