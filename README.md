@@ -962,7 +962,7 @@ TRANSCODE="off"
 TCP={"1080p60":(1080,59.94,"6M"),"1080p30":(1080,29.97,"4.5M"),"720p60":(720,59.94,"4.5M"),"720p30":(720,29.97,"3M"),"1080p50":(1080,50,"6M"),"1080p25":(1080,25,"4.5M"),"720p50":(720,50,"4.5M"),"720p25":(720,25,"3M")}
 TC_HEIGHT,TC_FPS,TC_VBITRATE=TCP.get(str(TRANSCODE).lower().strip(),(0,0,""))
 TRANSCODE=TC_HEIGHT>0
-TC_LEAD=8.0
+TC_LEAD=4.0
 import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found",file=sys.stderr);sys.exit(1)
