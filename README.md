@@ -1035,13 +1035,29 @@ def zsend(port,msg):
    if not f&1:break
   return r.decode(errors="ignore")
  finally:c.close()
+ZQ=[1.0,False]
 def zset(k):
+ ZQ[0]=k
+ if ZQ[1]:return
+ ZQ[1]=True
  def go():
+  sent=None;er=None
   try:
-   a=zsend(ZP[0],"setpts@v expr "+sxp(k));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k))
-   if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
-  except Exception as e:
-   if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
+   for i in range(40):
+    k_=ZQ[0]
+    try:
+     a=zsend(ZP[0],"setpts@v expr "+sxp(k_));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k_))
+     if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
+     sent=k_
+     if zerr[0]:zerr[0]=0;log("playback speed control working again")
+     if ZQ[0]==k_:return
+     continue
+    except Exception as e:er=e
+    time.sleep(0.25)
+   if not zerr[0]:zerr[0]=1;log("could not change playback speed after 10s (%s)"%er)
+  finally:
+   ZQ[1]=False
+   if sent is not None and ZQ[0]!=sent:zset(ZQ[0])
  threading.Thread(target=go,daemon=True).start()
 RFS={"on":False,"b":bytearray(),"t":0.0,"m":None,"busy":False}
 def motm(d):
@@ -1789,13 +1805,29 @@ def zsend(port,msg):
    if not f&1:break
   return r.decode(errors="ignore")
  finally:c.close()
+ZQ=[1.0,False]
 def zset(k):
+ ZQ[0]=k
+ if ZQ[1]:return
+ ZQ[1]=True
  def go():
+  sent=None;er=None
   try:
-   a=zsend(ZP[0],"setpts@v expr "+sxp(k));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k))
-   if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
-  except Exception as e:
-   if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
+   for i in range(40):
+    k_=ZQ[0]
+    try:
+     a=zsend(ZP[0],"setpts@v expr "+sxp(k_));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k_))
+     if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
+     sent=k_
+     if zerr[0]:zerr[0]=0;log("playback speed control working again")
+     if ZQ[0]==k_:return
+     continue
+    except Exception as e:er=e
+    time.sleep(0.25)
+   if not zerr[0]:zerr[0]=1;log("could not change playback speed after 10s (%s)"%er)
+  finally:
+   ZQ[1]=False
+   if sent is not None and ZQ[0]!=sent:zset(ZQ[0])
  threading.Thread(target=go,daemon=True).start()
 RFS={"on":False,"b":bytearray(),"t":0.0,"m":None,"busy":False}
 def motm(d):
