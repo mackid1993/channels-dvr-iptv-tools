@@ -887,7 +887,7 @@ with `[hlsloop stream]`:
 | `...; no backup stream is answering right now, so staying on this feed` | Every backup is down too; the profile waits and checks them again. |
 | `audio and video are Ns apart in this feed; holding it back` / `audio and video back in step; rejoining smoothly` | The provider sent segments with audio and video out of step; they were held back instead of played. |
 | `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
-| `joining the backup stream seamlessly (offset Xs)` | The backup's timestamps were shifted to continue the old feed's timeline. |
+| `continuing on the new stream timeline seamlessly (offset Xs)` | After a switch to a backup or a provider channel restart, the new stream's timestamps were shifted to continue where the old ones stopped. |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and the channel has no backup; the profile keeps waiting for it. |
 | `resuming after Dispatcharr restart` | Dispatcharr restarted the stream; the profile picked up where it stopped. |
 | `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr's database; failover is off for that stream. |
@@ -1469,7 +1469,7 @@ def writer():
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
-   if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7 and lead<clcap()):time.sleep(0.02);continue
+   if lead>=cl and (qs<=dp-cl+tgt or (TRANSCODE and lead>=cl+5)) and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7 and lead<clcap()):time.sleep(0.02);continue
    if TRANSCODE and it[5]==0 and mono()-fst>90:
     dp_=dep or 3*tgt;rstep(mot(it[1]),now,qs,dp_*0.5,dp_*0.75)
    d=it[1]
@@ -1568,7 +1568,7 @@ while not gone():
    elif nsk:nsk=0;pend=True;log("audio and video back in step; rejoining smoothly")
    if pend and p0 is not None:
     pend=False
-    if qend is not None:moff=qend-p0;enq(["remux","joining the backup stream seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
+    if qend is not None:moff=qend-p0;enq(["remux","continuing on the new stream timeline seamlessly (offset %.1fs)"%moff,0,moff]);sig=None;cmap=None
    g=tsig(d)
    if g and sig and g!=sig:enq(["remux","stream layout changed",0,None]);cmap=None
    if g:sig=g
