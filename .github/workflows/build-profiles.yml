@@ -1,0 +1,52 @@
+name: Build stream profiles
+
+# Minifies stream_profiles/*.py into the pasteable blocks in README.md.
+# On pull requests it only checks that README.md is current.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "stream_profiles/**"
+      - "scripts/minify_profile.py"
+      - "scripts/build-profiles.sh"
+      - "README.md"
+      - ".github/workflows/build-profiles.yml"
+  pull_request:
+    paths:
+      - "stream_profiles/**"
+      - "scripts/minify_profile.py"
+      - "scripts/build-profiles.sh"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Syntax check the sources
+        run: python -m py_compile stream_profiles/hlsloop.py stream_profiles/tsloop.py
+      - name: Check README (pull requests)
+        if: github.event_name == 'pull_request'
+        run: sh scripts/build-profiles.sh --check
+      - name: Build README
+        if: github.event_name != 'pull_request'
+        run: sh scripts/build-profiles.sh
+      - name: Commit README if it changed
+        if: github.event_name != 'pull_request'
+        run: |
+          if git diff --quiet README.md; then
+            echo "README.md already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "README: rebuild stream profiles from stream_profiles/"
+          git push
