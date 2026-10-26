@@ -961,11 +961,11 @@ This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsl
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# video plays at its real speed. One exception, transcoding only: if a
-# provider outage drains the reserve below half, playback slows by 0.5%
-# (fast motion) to 3% (still scenes), pitch unchanged, switched live with
-# no restart, until the reserve is back to three quarters, then eases
-# back to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# video plays at its real speed, except while the reserve refills: if a
+# provider problem keeps the reserve below half for 30 seconds, video and
+# audio play 3% slower together (pitch unchanged) until it is back to
+# three quarters. Costs a few seconds more delay
+# and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -982,7 +982,7 @@ def log(m):
  try:
   with LG:sys.stderr.write("[hlsloop stream] " + str(m) + "\n");sys.stderr.flush()
  except Exception:pass
-ff = None;sig = None;cmap = None;off = 0.0;TK = 1.0;tout = 0.0;HW = None;STL = collections.deque();ltk = -1000000000.0
+ff = None;sig = None;cmap = None;off = 0.0;tout = 0.0;HW = None;STL = collections.deque()
 def hwpick():
  global HW
  if HW:return HW
@@ -999,87 +999,34 @@ def hwpick():
   try:open(hf, "w").write(HW)
   except Exception:pass
  log("transcoding with " + {"vaapi": "Intel/AMD graphics (VAAPI)", "nvenc": "NVIDIA graphics (NVENC)", "cpu": "the CPU (no hardware encoder found)"}[HW]);return HW
-ZB = 20000 + os.getpid() % 7000 * 4;ZP = [ZB + 2];zerr = [0]
-def sxp(k):return "if(isnan(PREV_OUTPTS),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)" % k
-def zsend(port, msg):
- import socket, struct;c = socket.create_connection(("127.0.0.1", port), timeout=3)
- def rx(n):
-  b = b""
-  while len(b) < n:
-   x = c.recv(n - len(b))
-   if not x:raise OSError("closed")
-   b += x
-  return b
- def frame():f = rx(1)[0];n = struct.unpack(">Q", rx(8))[0] if f & 2 else rx(1)[0];return (f, rx(n))
- def send(f, b):c.sendall((bytes([f | 2]) + struct.pack(">Q", len(b)) if len(b) > 255 else bytes([f, len(b)])) + b)
- try:
-  c.sendall(bytes([255]) + bytes(8) + bytes([127, 3, 0]) + b"NULL" + bytes(16) + bytes(32));rx(64);send(4, bytes([5]) + b"READY" + bytes([11]) + b"Socket-Type" + struct.pack(">I", 3) + b"REQ");frame();send(1, b"");send(0, msg.encode());r = b""
-  while True:
-   f, b = frame()
-   if b:r = b
-   if not f & 1:break
-  return r.decode(errors="ignore")
- finally:c.close()
-ZQ = [1.0, False]
-def zset(k):
- ZQ[0] = k
- if ZQ[1]:return
- ZQ[1] = True
- def go():
-  sent = None;er = None
-  try:
-   for i in range(40):
-    k_ = ZQ[0]
-    try:
-     a = zsend(ZP[0], "setpts@v expr " + sxp(k_));b = zsend(ZP[0] + 1, "atempo@a tempo %.4f" % (1 / k_))
-     if not (a.startswith("0") and b.startswith("0")):raise OSError(a + " / " + b)
-     sent = k_
-     if zerr[0]:zerr[0] = 0;log("playback speed control working again")
-     if ZQ[0] == k_:return
-     continue
-    except Exception as e:er = e
-    time.sleep(0.25)
-   if not zerr[0]:zerr[0] = 1;log("could not change playback speed after 10s (%s)" % er)
-  finally:
-   ZQ[1] = False
-   if sent is not None and ZQ[0] != sent:zset(ZQ[0])
- threading.Thread(target=go, daemon=True).start()
-RFS = {"on": False, "b": bytearray(), "t": 0.0, "m": None, "busy": False}
-def motm(d):
- try:o = sp.run([FF, "-hide_banner", "-v", "info", "-t", "2", "-skip_loop_filter", "all", "-i", "pipe:0", "-an", "-vf", "scale=96:54,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"], input=d, capture_output=True, timeout=10).stderr.decode(errors="ignore");v = [float(x) for x in re.findall("YAVG=([0-9.]+)", o)];RFS["m"] = sum(v) / len(v) if v else None
- except Exception:RFS["m"] = None
- RFS["busy"] = False
-def mot(d):
- if RFS["on"] and (not RFS["busy"]):RFS["busy"] = True;threading.Thread(target=motm, args=(bytes(d[:6000000]),), daemon=True).start()
- return RFS["m"]
-def spd(m):
- if m is None:return 1.015
- return 1.03 - 0.025 * min(max((m - 0.5) / 3.5, 0.0), 1.0)
-def rstep(m, now, qs, lo, hi):
- global TK, ltk
- if not RFS["on"] and now - ltk > 60 and (qs < lo):RFS["on"] = True;ltk = now;log("reserve down to %.0fs; slowing playback 0.5 to 3 percent, depending on motion, until it is back to %.0fs" % (qs, hi))
- elif RFS["on"] and qs >= hi:RFS["on"] = False;RFS["m"] = None;ltk = now;log("reserve back to %.0fs; easing back to real speed" % qs)
- want = spd(m) if RFS["on"] else 1.0
- if abs(want - TK) >= 0.0025:TK = round(TK + max(-0.005, min(0.005, want - TK)), 4);zset(TK)
 def frs(f):
  for a, b in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
   if abs(f - a) < 0.01:return b
  return "%g" % f
+SLOW = 1.03;SPD = 1.0;SPA = 1.0;RQ = collections.deque(maxlen=6000);lowt = None;ltk = -1000000000.0
+def rstep(now, qs, lo, hi, win):
+ global SPD, lowt, ltk
+ while RQ and now - RQ[0][0] > win:RQ.popleft()
+ qm = min((q for _, q in RQ))
+ if SPD == 1.0:
+  if qm >= lo:lowt = None;return
+  if lowt is None:lowt = now
+  if now - lowt < 30 or now - ltk < 60:return
+  SPD = SLOW;lowt = None;ltk = now;remux("reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi))
+ elif qm >= hi:SPD = 1.0;ltk = now;remux("reserve back to %.0fs; back to real speed" % qm)
 def ffcmd():
  b = [FF, "-hide_banner", "-loglevel", "error", "-fflags", "+discardcorrupt", "-probesize", "1000000", "-analyzeduration", "1000000"]
  if not TRANSCODE:return b + ["-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-copyts"] + (["-output_ts_offset", "%.3f" % off] if off else []) + ["-f", "mpegts", "pipe:1"]
- h = hwpick();fr = frs(TC_FPS);g = str(int(round(2 * TC_FPS)));vf = "zmq=b=tcp\\\\://127.0.0.1\\\\:%d,bwdif=mode=send_frame:deint=interlaced,setpts@v=expr=%s,fps=%s,scale=-2:%d:flags=fast_bilinear" % (ZP[0], chr(39) + sxp(TK) + chr(39), fr, TC_HEIGHT);rc = ["-b:v", TC_VBITRATE, "-maxrate", TC_VBITRATE, "-bufsize", TC_VBITRATE, "-g", g]
+ h = hwpick();fr = frs(TC_FPS);g = str(int(round(2 * TC_FPS)));vf = "bwdif=mode=send_frame:deint=interlaced," + ("setpts=(PTS-STARTPTS)*%.4f+STARTPTS," % SPA if SPA != 1.0 else "") + "fps=%s,scale=-2:%d:flags=fast_bilinear" % (fr, TC_HEIGHT);rc = ["-b:v", TC_VBITRATE, "-maxrate", TC_VBITRATE, "-bufsize", TC_VBITRATE, "-g", g]
  if h == "vaapi":b += ["-vaapi_device", "/dev/dri/renderD128"];vc = ["-vf", vf + ",format=nv12,hwupload", "-c:v", "h264_vaapi"] + rc + ["-bf", "0"]
  elif h == "nvenc":vc = ["-vf", vf + ",format=yuv420p", "-c:v", "h264_nvenc", "-preset", "p4"] + rc + ["-bf", "0"]
  else:vc = ["-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast"] + rc
- af = "azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,atempo@a=tempo=%.4f" % (ZP[0] + 1, 1 / TK);return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4), "-f", "mpegts", "pipe:1"]
+ af = "aresample=async=1000" + (",atempo=%.6f" % (1 / SPA) if SPA != 1.0 else "");return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4), "-f", "mpegts", "pipe:1"]
 def rtgt():return dep or 3 * tgt
 def remux(why=None):
- global ff
+ global ff, SPA
  if why:log("restarting remuxer: " + why)
- old = ff
- if TRANSCODE:ZP[0] = ZB + 2 - (ZP[0] - ZB)
- ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE)
+ old = ff;SPA = SPD;ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE)
  with fql:fq.append(ff)
  if old:
   shut[old.pid] = mono()
@@ -1377,13 +1324,14 @@ def tpos(ix, x, dur):
 def enq(it):
  with ql:Q.append(it);Qs[0] += it[2] if it[0] == "seg" else 0
 def writer():
- global wlast, wpart, oend, off, wlead, wb, TK, tout, ltk;lead = wlead;t = mono();cpr = None;cpt = mono();cbv = None;cbt = mono()
+ global wlast, wpart, oend, off, wlead, wb, tout;lead = wlead;t = mono();cpr = None;cpt = mono();cbv = None;cbt = mono()
  while run:
   try:
    now = mono();wb = now;lead = max(lead - (now - t), 0.0);t = now;wlead = lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1);continue
    with ql:
     it = Q[0] if Q else None;qs = Qs[0]
+    if TRANSCODE:RQ.append((now, qs))
     if it is None:Qs[0] = 0.0
    if it is None:time.sleep(0.05);continue
    if it[0] != "seg":
@@ -1399,10 +1347,10 @@ def writer():
    if cpr is not None and cl < cpr:cl = max(cl, cpr - 0.1 * (now - cpt))
    cpr = cl;cpt = now
    if lead >= cl and (qs <= dp - cl + tgt or (TRANSCODE and lead >= cl)) and (not (TRANSCODE and qs > 2 and (mono() - OWT[0] > 0.7) and (lead < clcap()))):time.sleep(0.02);continue
-   if TRANSCODE and it[5] == 0 and (mono() - fst > 90):dp_ = dep or 3 * tgt;rstep(mot(it[1]), now, qs, dp_ * 0.5, dp_ * 0.75)
+   if TRANSCODE and it[5] == 0 and (mono() - fst > 90):dp_ = dep or 3 * tgt;rstep(now, qs, dp_ * 0.5, dp_ * 0.75, 1.5 * tgt)
    d = it[1]
    if len(it) < 7:it.append(tix(d))
-   k = min(65424, max(len(d) // 100 // 188 * 188, 188), len(d) - it[5]);e = it[5] + k;cd = (it[2] if e >= len(d) else tpos(it[6], e, it[2])) - tpos(it[6], it[5], it[2]) if it[6] else it[2] * k / max(len(d), 1);cd = max(cd, 0.0);put(d[it[5]:it[5] + k]);it[5] += k;wpart = [it[3], it[5]];lead += cd * TK;tout += cd * TK
+   k = min(65424, max(len(d) // 100 // 188 * 188, 188), len(d) - it[5]);e = it[5] + k;cd = (it[2] if e >= len(d) else tpos(it[6], e, it[2])) - tpos(it[6], it[5], it[2]) if it[6] else it[2] * k / max(len(d), 1);cd = max(cd, 0.0);put(d[it[5]:it[5] + k]);it[5] += k;wpart = [it[3], it[5]];lead += cd * SPA;tout += cd * SPA
    with ql:Qs[0] -= cd
    if it[5] >= len(d):
     with ql:Q.popleft()
@@ -1651,11 +1599,11 @@ This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloo
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# video plays at its real speed. One exception, transcoding only: if a
-# provider outage drains the reserve below half, playback slows by 0.5%
-# (fast motion) to 3% (still scenes), pitch unchanged, switched live with
-# no restart, until the reserve is back to three quarters, then eases
-# back to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# video plays at its real speed, except while the reserve refills: if a
+# provider problem keeps the reserve below half for 30 seconds, video and
+# audio play 3% slower together (pitch unchanged) until it is back to
+# three quarters. Costs a few seconds more delay
+# and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1669,7 +1617,7 @@ def log(m):
  try:sys.stderr.write("[tsloop stream] %s\n" % m);sys.stderr.flush()
  except Exception:pass
 def dif(a, b):return (a - b + WR / 2) % WR - WR / 2
-ff = None;off = 0.0;TK = 1.0;tout = 0.0;HW = None;STL = collections.deque();ltk = -1000000000.0
+ff = None;off = 0.0;tout = 0.0;HW = None;STL = collections.deque()
 def hwpick():
  global HW
  if HW:return HW
@@ -1686,87 +1634,50 @@ def hwpick():
   try:open(hf, "w").write(HW)
   except Exception:pass
  log("transcoding with " + {"vaapi": "Intel/AMD graphics (VAAPI)", "nvenc": "NVIDIA graphics (NVENC)", "cpu": "the CPU (no hardware encoder found)"}[HW]);return HW
-ZB = 20000 + os.getpid() % 7000 * 4;ZP = [ZB + 2];zerr = [0]
-def sxp(k):return "if(isnan(PREV_OUTPTS),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)" % k
-def zsend(port, msg):
- import socket, struct;c = socket.create_connection(("127.0.0.1", port), timeout=3)
- def rx(n):
-  b = b""
-  while len(b) < n:
-   x = c.recv(n - len(b))
-   if not x:raise OSError("closed")
-   b += x
-  return b
- def frame():f = rx(1)[0];n = struct.unpack(">Q", rx(8))[0] if f & 2 else rx(1)[0];return (f, rx(n))
- def send(f, b):c.sendall((bytes([f | 2]) + struct.pack(">Q", len(b)) if len(b) > 255 else bytes([f, len(b)])) + b)
- try:
-  c.sendall(bytes([255]) + bytes(8) + bytes([127, 3, 0]) + b"NULL" + bytes(16) + bytes(32));rx(64);send(4, bytes([5]) + b"READY" + bytes([11]) + b"Socket-Type" + struct.pack(">I", 3) + b"REQ");frame();send(1, b"");send(0, msg.encode());r = b""
-  while True:
-   f, b = frame()
-   if b:r = b
-   if not f & 1:break
-  return r.decode(errors="ignore")
- finally:c.close()
-ZQ = [1.0, False]
-def zset(k):
- ZQ[0] = k
- if ZQ[1]:return
- ZQ[1] = True
- def go():
-  sent = None;er = None
-  try:
-   for i in range(40):
-    k_ = ZQ[0]
-    try:
-     a = zsend(ZP[0], "setpts@v expr " + sxp(k_));b = zsend(ZP[0] + 1, "atempo@a tempo %.4f" % (1 / k_))
-     if not (a.startswith("0") and b.startswith("0")):raise OSError(a + " / " + b)
-     sent = k_
-     if zerr[0]:zerr[0] = 0;log("playback speed control working again")
-     if ZQ[0] == k_:return
-     continue
-    except Exception as e:er = e
-    time.sleep(0.25)
-   if not zerr[0]:zerr[0] = 1;log("could not change playback speed after 10s (%s)" % er)
-  finally:
-   ZQ[1] = False
-   if sent is not None and ZQ[0] != sent:zset(ZQ[0])
- threading.Thread(target=go, daemon=True).start()
-RFS = {"on": False, "b": bytearray(), "t": 0.0, "m": None, "busy": False}
-def motm(d):
- try:o = sp.run([FF, "-hide_banner", "-v", "info", "-t", "2", "-skip_loop_filter", "all", "-i", "pipe:0", "-an", "-vf", "scale=96:54,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"], input=d, capture_output=True, timeout=10).stderr.decode(errors="ignore");v = [float(x) for x in re.findall("YAVG=([0-9.]+)", o)];RFS["m"] = sum(v) / len(v) if v else None
- except Exception:RFS["m"] = None
- RFS["busy"] = False
-def mot(d):
- if RFS["on"] and (not RFS["busy"]):RFS["busy"] = True;threading.Thread(target=motm, args=(bytes(d[:6000000]),), daemon=True).start()
- return RFS["m"]
-def spd(m):
- if m is None:return 1.015
- return 1.03 - 0.025 * min(max((m - 0.5) / 3.5, 0.0), 1.0)
-def rstep(m, now, qs, lo, hi):
- global TK, ltk
- if not RFS["on"] and now - ltk > 60 and (qs < lo):RFS["on"] = True;ltk = now;log("reserve down to %.0fs; slowing playback 0.5 to 3 percent, depending on motion, until it is back to %.0fs" % (qs, hi))
- elif RFS["on"] and qs >= hi:RFS["on"] = False;RFS["m"] = None;ltk = now;log("reserve back to %.0fs; easing back to real speed" % qs)
- want = spd(m) if RFS["on"] else 1.0
- if abs(want - TK) >= 0.0025:TK = round(TK + max(-0.005, min(0.005, want - TK)), 4);zset(TK)
 def frs(f):
  for a, b in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
   if abs(f - a) < 0.01:return b
  return "%g" % f
+SLOW = 1.03;SPD = 1.0;SPA = 1.0;ADJ = [0.0];RP = [None, 0.0];RQ = collections.deque(maxlen=6000);lowt = None;ltk = -1000000000.0
+def rstep(now, qs, lo, hi, win):
+ global SPD, lowt, ltk
+ while RQ and now - RQ[0][0] > win:RQ.popleft()
+ qm = min((q for _, q in RQ))
+ if SPD == 1.0:
+  if qm >= lo:lowt = None;return
+  if lowt is None:lowt = now
+  if now - lowt < 30 or now - ltk < 60:return
+  SPD = SLOW;lowt = None;ltk = now;RP[1] = now;RP[0] = "reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi)
+ elif qm >= hi:SPD = 1.0;ltk = now;RP[1] = now;RP[0] = "reserve back to %.0fs; back to real speed" % qm
+def kfo(d, a, b):
+ for j in range(a, b - 187, 188):
+  p = d[j:j + 188]
+  if p[0] == 71 and p[1] & 64:
+   q = pests(p)
+   if q and 224 <= q[0] <= 239 and iskey(p):return j
+ return None
+def avlead(d, k):
+ q = pests(d[k:k + 188]);vk = q[1] if q else None
+ if vk is None:return 0.0
+ for j in range(k, min(len(d), k + 188 * 3000) - 187, 188):
+  p = d[j:j + 188]
+  if p[0] == 71 and p[1] & 64:
+   q = pests(p)
+   if q and (192 <= q[0] <= 223 or q[0] == 189):return min(max(dif(vk, q[1]), 0.0), 1.0)
+ return 0.0
 def ffcmd():
  b = [FF, "-hide_banner", "-loglevel", "error", "-fflags", "+discardcorrupt", "-probesize", "1000000", "-analyzeduration", "1000000"] + (["-probesize", "5000000", "-analyzeduration", "3000000"] if TRANSCODE else [])
  if not TRANSCODE:return b + ["-i", "pipe:0", "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-copyts"] + (["-output_ts_offset", "%.3f" % off] if off else []) + ["-f", "mpegts", "pipe:1"]
- h = hwpick();fr = frs(TC_FPS);g = str(int(round(2 * TC_FPS)));vf = "zmq=b=tcp\\\\://127.0.0.1\\\\:%d,bwdif=mode=send_frame:deint=interlaced,setpts@v=expr=%s,fps=%s,scale=-2:%d:flags=fast_bilinear" % (ZP[0], chr(39) + sxp(TK) + chr(39), fr, TC_HEIGHT);rc = ["-b:v", TC_VBITRATE, "-maxrate", TC_VBITRATE, "-bufsize", TC_VBITRATE, "-g", g]
+ h = hwpick();fr = frs(TC_FPS);g = str(int(round(2 * TC_FPS)));vf = "bwdif=mode=send_frame:deint=interlaced," + ("setpts=(PTS-STARTPTS)*%.4f+STARTPTS," % SPA if SPA != 1.0 else "") + "fps=%s,scale=-2:%d:flags=fast_bilinear" % (fr, TC_HEIGHT);rc = ["-b:v", TC_VBITRATE, "-maxrate", TC_VBITRATE, "-bufsize", TC_VBITRATE, "-g", g]
  if h == "vaapi":b += ["-vaapi_device", "/dev/dri/renderD128"];vc = ["-vf", vf + ",format=nv12,hwupload", "-c:v", "h264_vaapi"] + rc + ["-bf", "0"]
  elif h == "nvenc":vc = ["-vf", vf + ",format=yuv420p", "-c:v", "h264_nvenc", "-preset", "p4"] + rc + ["-bf", "0"]
  else:vc = ["-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast"] + rc
- af = "azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,atempo@a=tempo=%.4f" % (ZP[0] + 1, 1 / TK);return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4), "-f", "mpegts", "pipe:1"]
+ af = "aresample=async=1000" + (",atempo=%.6f" % (1 / SPA) if SPA != 1.0 else "");return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4 - ADJ[0]), "-f", "mpegts", "pipe:1"]
 def rtgt():return RES
 def remux(why=None):
- global ff
+ global ff, SPA
  if why:log("restarting remuxer: " + why)
- old = ff
- if TRANSCODE:ZP[0] = ZB + 2 - (ZP[0] - ZB)
- ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE)
+ old = ff;SPA = SPD;RP[0] = None;ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE);ADJ[0] = 0.0
  with fql:fq.append(ff)
  if old:
   shut[old.pid] = mono()
@@ -2015,13 +1926,14 @@ def watch():
    if not base and mono() - t0 > 120:time.sleep(28)
   time.sleep(2)
 def writer():
- global dl, off, wlead, wcur, wput, wb, dmx, TK, tout, ltk;lead = wlead;t = mono();sv = 0.0;remp = False;dh = collections.deque();dt = 0.0;ce = max(CL, min(wlead, CL + xb));tc = mono();rxt = -1000000000.0;pxb = xb
+ global dl, off, wlead, wcur, wput, wb, dmx, tout;lead = wlead;t = mono();sv = 0.0;remp = False;dh = collections.deque();dt = 0.0;ce = max(CL, min(wlead, CL + xb));tc = mono();rxt = -1000000000.0;pxb = xb
  while run:
   try:
    now = mono();wb = now;lead = max(lead - (now - t), 0.0);t = now;wlead = lead
    if ff.poll() is not None:remux("remuxer exited");time.sleep(1 if mono() - rxt < 10 else 0.1);rxt = mono();continue
    with ql:
     it = Q[0] if Q else None;qs = Qs[0]
+    if TRANSCODE:RQ.append((now, qs))
     if it is None:Qs[0] = 0.0
    if now - dt >= 1:
     dt = now;dh.append((now, qs + max(lead, 0.0)))
@@ -2039,11 +1951,13 @@ def writer():
    else:en, ca, sn = (len(d), it[2], it[3])
    cd = max(ca - it[8], 0.0);rx = nrx[0] > 0 and qs > 4.0;ce = min(max(min(CL + xb + (RXL if rx else 0.0), clcap(), max(ce, lead + qs - STALL - RLOW)), ce - 0.01 * (now - tc)), ce + (RXR if rx else RAMP) * (now - tc) + max(xb - pxb, 0.0));tc = now;pxb = xb
    if cd > 0 and lead >= ce and (qs <= QMAX + 30):time.sleep(0.02);continue
-   if TRANSCODE and it[6] == 0 and (mono() - fst > 90):
-    if len(RFS["b"]) < 8000000:RFS["b"] += it[1]
-    RFS["t"] += it[2]
-    if RFS["t"] >= 4:m_ = mot(bytes(RFS["b"]));RFS["b"] = bytearray();RFS["t"] = 0.0;rstep(m_, now, qs, RES * 0.5, RES * 0.8)
-   put(d[it[7]:en]);it[6] = i + 1;it[7] = en;it[8] = max(ca, it[8]);wput = mono();lead = min(lead + cd * TK, ce + 10.0);tout += cd * TK;dl = sn;wcur = it[4]
+   if TRANSCODE and i == 0 and (mono() - fst > 90):rstep(now, qs, RES * 0.5, RES * 0.8, 3.0)
+   if RP[0] and it[7] < en:
+    k_ = kfo(d, it[7], en) if now - RP[1] < 10 else it[7]
+    if k_ is not None:
+     if k_ > it[7]:put(d[it[7]:k_])
+     it[7] = k_;w_ = RP[0];RP[0] = None;ADJ[0] = avlead(d, k_);remux(w_)
+   put(d[it[7]:en]);it[6] = i + 1;it[7] = en;it[8] = max(ca, it[8]);wput = mono();lead = min(lead + cd * SPA, ce + 10.0);tout += cd * SPA;dl = sn;wcur = it[4]
    with ql:
     Qs[0] -= cd
     if en >= len(d):Q.popleft();Qs[0] -= it[2] - it[8]
