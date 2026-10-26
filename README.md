@@ -375,7 +375,7 @@ profile exists for providers that don't offer HLS.
 | Extra head start per extra device | 5 s each, up to about 40 s in total | 5 s each, capped at about 8-14 s so failover keeps its headroom |
 | Backup failover (last resort), keepalive, stuck-feed recovery | Yes | Yes |
 | CPU per stream | Very low (works on whole segments) | Low, about 1-3 % of one core (handles every 188-byte packet in Python) |
-| Optional transcoding (`TRANSCODE=True`) | Yes; reserve target up to 150 s | Yes; reserve target up to 50 s |
+| Optional transcoding (`TRANSCODE="1080p60"` etc.) | Yes | Yes |
 | Delay behind live | about 60 s | about 20 s |
 | Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
 | Log prefix | `[hlsloop stream]` | `[tsloop stream]` |
@@ -472,16 +472,9 @@ Both stream profiles can re-encode video instead of passing it through. It's off
 
 ### Why turn it on
 
-- **Backups with a different frame rate or resolution stop bothering the player.** Every feed
-  leaves Dispatcharr in the same format, so a failover from a 29.97 fps feed to a 59.94 fps one
-  doesn't make Channels DVR (Apple TV in particular) drop frames or drift the audio.
-- **The reserve rebuilds itself after an outage.** When a long provider stall uses up the reserve,
-  the profile plays 3% slower (audio tempo-corrected, so the pitch doesn't change) until the
-  reserve is full again, then goes back to normal speed. Without transcoding, a used-up reserve
-  only comes back when you retune.
-- **The reserve grows on channels that stall a lot.** Its target is 1.5 times the longest stall
-  on that channel in the last 30 minutes, never less than the normal reserve, and at most 150 s
-  (HLS) or 50 s (MPEG-TS). Recording extensions grow with it.
+Every feed leaves Dispatcharr in the same format, so a failover to a backup with a different frame
+rate or resolution doesn't make Channels DVR (Apple TV in particular) drop frames or drift the
+audio. Video always plays at its real speed.
 
 The costs: GPU (or CPU) time, a little picture quality, and a few seconds more delay behind live.
 
@@ -858,7 +851,7 @@ switches, or `fetch loop stuck`.
   client at a failover while its decoder resets, and a different frame rate can make some players
   (Channels DVR on Apple TV) drop frames until you tune again. With transcoding off nothing is
   re-encoded to hide it; turn on [transcoding](#transcoding-optional) if it bothers you.
-- **A reserve used up by a long outage** only comes back on a retune, unless transcoding is on.
+- **A reserve used up by a long outage** only comes back on a retune.
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
   when the provider comes back, the profile recovers on its own, but video from the outage is lost.
 - **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
@@ -901,8 +894,8 @@ retune. You can delete the profile afterwards.
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# reserve rebuilds itself after a provider outage. Costs a few seconds
-# more delay and some GPU time. Give the Dispatcharr container a GPU
+# video always plays at its real speed. Costs a few seconds more delay
+# and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -962,11 +955,7 @@ def ffcmd():
  af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
- dp=dep or 3*tgt
- if not TRANSCODE:return dp
- while STL and mono()-STL[0][0]>1800:STL.popleft()
- ms=max([x[1] for x in STL],default=0.0)
- return max(dp,min(150.0,1.5*ms+CL))
+ return dep or 3*tgt
 def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
@@ -1186,7 +1175,7 @@ def watch():
   jw=requests.Session()
   try:
    with ql:rv=min(Qs[0]+max(wlead,0.0),rtgt()+tgt)
-   ad=min(int(rv+PM),240 if TRANSCODE else 180);now_=time.time()
+   ad=min(int(rv+PM),180);now_=time.time()
    if og is None:
     try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
     except Exception:og={}
@@ -1339,10 +1328,6 @@ def writer():
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
    if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7):time.sleep(0.02);continue
-   if TRANSCODE and it[5]==0 and now-ltk>120:
-    rt_=rtgt();wk=1.03 if qs<rt_-20 else (1.0 if qs>=rt_ else TK)
-    if wk!=TK:
-     TK=wk;ltk=now;remux("reserve %.0fs, target %.0fs; %s"%(qs,rt_,"playing 3% slower to rebuild it" if wk>1 else "back to normal speed"))
    d=it[1]
    if len(it)<7:it.append(tix(d))
    k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
@@ -1604,8 +1589,8 @@ stuck feeds and the tuner-sharing head start.
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# reserve rebuilds itself after a provider outage. Costs a few seconds
-# more delay and some GPU time. Give the Dispatcharr container a GPU
+# video always plays at its real speed. Costs a few seconds more delay
+# and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1663,10 +1648,7 @@ def ffcmd():
  af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
- if not TRANSCODE:return RES
- while STL and mono()-STL[0][0]>1800:STL.popleft()
- ms=max([x[1] for x in STL],default=0.0)
- return max(RES,min(QMAX-10.0,1.5*ms+CL))
+ return RES
 def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
@@ -1858,7 +1840,7 @@ def watch():
   jw=requests.Session()
   try:
    with ql:rv=min(Qs[0]+max(wlead,0.0),rtgt()+15.0)
-   ad=min(int(rv+PM),240 if TRANSCODE else 180);now_=time.time()
+   ad=min(int(rv+PM),180);now_=time.time()
    if og is None:
     try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
     except Exception:og={}
@@ -1973,10 +1955,6 @@ def writer():
    if it[0]=="remux":
     with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
-   if TRANSCODE and now-ltk>120:
-    rt_=rtgt();wk=1.03 if qs<rt_-8 else (1.0 if qs>=rt_ else TK)
-    if wk!=TK:
-     TK=wk;ltk=now;remux("reserve %.0fs, target %.0fs; %s"%(qs,rt_,"playing 3% slower to rebuild it" if wk>1 else "back to normal speed"))
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
