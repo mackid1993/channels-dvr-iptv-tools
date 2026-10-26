@@ -456,7 +456,7 @@ written, and nothing is written outside the container.
 | File | Where | What's in it | Why | Cleanup |
 |---|---|---|---|---|
 | `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
-| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start, plus the frame rate the stream started at and the frame rate of each of the channel's streams it has checked. A few KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. Frame rates older than 24 hours are ignored. | Rewritten about once a second while the channel plays, one file per channel. Every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours, and `/tmp` is cleared whenever the Dispatcharr container restarts. |
+| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten about once a second while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
 
 To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-*.json
 /tmp/tsloop-*.json` inside the container) while nothing is playing.
@@ -519,27 +519,6 @@ encoder does:
   Channels DVR last refreshed it), the profile refreshes that source in Channels DVR, the same
   as the **Refresh** button, and checks again. Playback never waits for this. Every Dispatcharr
   playlist you've added to Channels DVR is handled the same way.
-- **Picks the best stream when you tune.** The first stream in a channel's list isn't necessarily
-  the best one; it's whatever was put first. On a fresh tune the profile checks every stream on the
-  channel at the same moment, reads each one's resolution and frame rate from the start of its
-  video (a few kilobytes, no decoding), and plays the best one that answered: highest resolution,
-  then highest frame rate, then your stream order. It waits at most 1.5 seconds; a stream that
-  hasn't answered by then counts as "unknown", and one that errors or serves the offline
-  placeholder counts as "not working". The order it settles on is also the order it uses for
-  failover, so a dead stream is never the first one it falls back to. Each stream is opened once,
-  briefly, and closed again, the same as changing channels. If the provider answers any check with
-  a connection-limit error (509), it stops checking for that tune and uses your stream order. A
-  channel with no backup streams isn't checked at all. Dispatcharr's restart of a running stream
-  skips the check and resumes where it was.
-- **Keeps the frame rate the stream started with.** Players set themselves up for the frame rate a
-  stream starts at. A switch to a backup at a different frame rate (for example 29.97 to 59.94)
-  makes some players, such as Channels DVR on Apple TV, drop frames and drift audio until you tune
-  again. So at failover the profile tries working streams with the same frame rate first, then
-  streams of unknown rate, then other frame rates, and streams that weren't working last. If it
-  has to use a different frame rate, it keeps checking the matching streams every 30 seconds and
-  moves back to one once it has stayed healthy for a minute (never sooner than 2 minutes after
-  the last switch). Moving back is a switch like any other, so it jumps forward or back in the
-  show.
 - **Switches to a backup only as a last resort.** Every feed of a channel is at a different point
   in the program (two encodes of the same channel can be minutes apart, and providers don't send
   the clock time needed to line them up), so a switch always means jumping forward or back in the
@@ -557,8 +536,7 @@ encoder does:
   - **Before switching** it checks that the backup answers with a real playlist (not the offline
     placeholder). A feed that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so
     a channel whose feeds are all down waits instead of hopping between dead feeds. Once on a
-    backup it stays there as long as it works, unless it moved to a different frame rate (see
-    above).
+    backup it stays there as long as it works.
   - **At the switch** the backup is joined as deep as the outage lasted (deep enough to rebuild
     the reserve after a long one), timestamps continue where the old feed stopped, and the new
     remuxer starts before the old one finishes, so the output doesn't pause. A backup on a
@@ -932,58 +910,15 @@ def fetch(q):
  return tsok(q,d[:-d[-1]] if d and 0<d[-1]<=16 else d)
 st="/tmp/hlsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()).hexdigest()+".json"
 last=None;rseen=None;seen=collections.deque(maxlen=30);stalled=False;oend=None;rcur=None;wlast=None;wpart=None;rpart=None;dep=0.0;wlead=0.0;sl=threading.Lock()
-fps0=None;rnx=0.0;rok={};FR={};FT={}
-try:
- j_=json.load(open(st))
- FT={k:v for k,v in j_.get("ft",{}).items() if time.time()-v<86400};FR={k:float(v) for k,v in j_.get("fr",{}).items() if k in FT}
-except Exception:pass
-try:
- for f_ in os.listdir(os.path.dirname(st)):
-  p_=os.path.join(os.path.dirname(st),f_)
-  if f_.startswith(("hlsloop-","tsloop-")) and "-jobs-" not in f_ and time.time()-os.path.getmtime(p_)>86400:os.remove(p_)
-except Exception:pass
-def svfr():pass
-def rmatch(u):
- return bool(fps0 and FR.get(u) and abs(FR[u]/fps0-1)<0.1)
-def learn(u,r_):
- global fps0
- if not r_:return
- if fps0 is None:fps0=r_;log("this stream started at %.2f fps; when switching, backups with the same frame rate come first"%r_)
- FR[u]=r_;FT[u]=time.time()
-def vfps(d,dur):
- n=0;vp=None
- try:
-  for i in range(0,len(d)-187,188):
-   p=d[i:i+188]
-   if p[0]!=0x47 or not p[1]&64:continue
-   af=(p[3]>>4)&3
-   if af==2:continue
-   o=5+p[4] if af==3 else 4
-   if o+4<=188 and p[o:o+3]==bytes([0,0,1]) and 0xE0<=p[o+3]<=0xEF:
-    pid=((p[1]&31)<<8)|p[2]
-    if vp is None:vp=pid
-    if pid==vp:n+=1
- except Exception:return None
- return n/dur if dur and n>=dur*10 else None
-def rck():
- global rnx
- if fps0 is None or stalled or rmatch(cur) or not FR.get(cur) or mono()<rnx or mono()-fst<120:return None
- rnx=mono()+30
- for u in feeds():
-  if u!=cur and rmatch(u) and fbad.get(u,[0])[0]<=mono():
-   if not probe(u):rok.pop(u,None);return None
-   p_=rok.get(u);rok[u]=(p_[0] if p_ and mono()-p_[1]<45 else mono(),mono())
-   return u if mono()-rok[u][0]>=60 else None
- return None
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4 and j.get("src")==src:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;xb=float(j.get("xb",0.0));pk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));fps0=j.get("f0");wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4 and j.get("src")==src:last=j["last"] if j["hasseq"] else None;rseen=set(j["seen"]);seen.extend(j["seen"]);off=j.get("off",0.0);oend=j.get("oend");rcur=j.get("cur");wlast=last;rpart=j.get("part");dep=j.get("dep") or 0.0;xb=float(j.get("xb",0.0));pk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);log("resuming after Dispatcharr restart")
 except Exception:pass
 hasseq=True
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"src":src,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"f0":fps0,"fr":dict(FR),"ft":dict(FT),"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"src":src,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -1018,7 +953,7 @@ def probe(u):
    r=s.get(up.urljoin(r.url,v[0]),timeout=(2,3));r.raise_for_status();t=r.text
   return "#EXTINF" in t and "#EXT-X-ENDLIST" not in t
  except Exception:return False
-def handoff(why,depth=None,fl=None,to=None):
+def handoff(why,depth=None,fl=None):
  global stalled,got,cur,media,last,lag,pend,rseen,bad,gap,fst,lsw,lpr,ost
  fl=fl or feeds()
  if len(fl)<2:
@@ -1026,16 +961,13 @@ def handoff(why,depth=None,fl=None,to=None):
   stalled=True;got=mono();return
  if stalled and mono()-lpr<30:got=mono();return
  lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
- if not stalled and not to:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
+ if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
  cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
  cand=[u for u in cand if fbad.get(u,[0])[0]<=mono()] or sorted(cand,key=lambda u:fbad.get(u,[0])[0])
- cand.sort(key=lambda u:(u in BADF,(0 if rmatch(u) else (1 if not FR.get(u) else 2)) if fps0 else 0,RKI.get(u,99)))
- if to:cand=[]
  for u in cand:
   if mono()-pt>6:break
   if probe(u):nxt=u;break
   log("backup stream %d of %d is not answering; not trying it again for %.0fs"%(fl.index(u)+1,len(fl),mark(u)))
- if to:nxt=to
  if nxt is None:
   if not stalled:ost=got;log(why+"; no backup stream is answering right now, so staying on this feed")
   stalled=True;got=mono();return
@@ -1044,7 +976,6 @@ def handoff(why,depth=None,fl=None,to=None):
  cur=nxt;gap=(mono()-ost) if was else ((gap+mono()-got) if gap is not None else ((mono()-got) if last is not None else None));media=None;last=None;lag=None;rseen=None;seen.clear();bad.clear();pend=True;stalled=False;got=mono()
  if depth:gap=depth
  dq.clear();rq.clear();fst=lsw=mono();save()
- if fps0 and FR.get(nxt) and not rmatch(nxt):log("stream %d runs at %.2f fps, not %.2f; will move back to a matching stream once one has been stable for a minute"%(fl.index(nxt)+1,FR[nxt],fps0))
 def bye():
  global run
  run=0;save();killall();os._exit(0)
@@ -1254,151 +1185,10 @@ threading.Thread(target=pump,daemon=True).start()
 threading.Thread(target=writer,daemon=True).start()
 threading.Thread(target=watch,daemon=True).start()
 threading.Thread(target=stat,daemon=True).start()
-HLSP=True
-def FEEDS():return feeds()
-def rbs(b):
- o=bytearray();z=0
- for c in b:
-  if z>=2 and c==3:z=0;continue
-  o.append(c);z=z+1 if c==0 else 0
- return bytes(o)+bytes(32)
-class BR_:
- def __init__(s_,b):s_.b=b;s_.i=0
- def u(s_,n=1):
-  v=0
-  for _ in range(n):v=(v<<1)|((s_.b[s_.i>>3]>>(7-(s_.i&7)))&1);s_.i+=1
-  return v
- def ue(s_):
-  z=0
-  while not s_.u():z+=1
-  return (1<<z)-1+s_.u(z)
- def se(s_):
-  v=s_.ue();return (v+1)//2 if v&1 else -(v//2)
-def spsi(nal):
- b=BR_(rbs(nal[1:]));pf=b.u(8);b.u(16);b.ue()
- if pf in (100,110,122,244,44,83,86,118,128,138,139,134,135):
-  cf=b.ue()
-  if cf==3:b.u()
-  b.ue();b.ue();b.u()
-  if b.u():
-   for k in range(8 if cf!=3 else 12):
-    if b.u():
-     l=n=8
-     for _ in range(16 if k<6 else 64):
-      if n:n=(l+b.se()+256)%256
-      l=n or l
- b.ue();t=b.ue()
- if t==0:b.ue()
- elif t==1:
-  b.u();b.se();b.se()
-  for _ in range(b.ue()):b.se()
- b.ue();b.u();wm=b.ue();hm=b.ue();fm=b.u()
- if not fm:b.u()
- b.u();c=[0,0,0,0]
- if b.u():c=[b.ue() for _ in range(4)]
- w=(wm+1)*16-2*(c[0]+c[1]);h=(2-fm)*(hm+1)*16-2*(2-fm)*(c[2]+c[3]);f=None
- if b.u():
-  if b.u():
-   if b.u(8)==255:b.u(32)
-  if b.u():b.u()
-  if b.u():
-   b.u(4)
-   if b.u():b.u(24)
-  if b.u():b.ue();b.ue()
-  if b.u():
-   nu=b.u(32);tsc=b.u(32)
-   if nu:f=round(tsc/(2.0*nu),3)
- return (w,h,f)
-SPSR=re.compile(b"\x00\x00\x01[\x27\x47\x67]")
-def hdr(buf):
- i=0
- while i<len(buf)-376 and not (buf[i]==0x47 and buf[i+188]==0x47):i+=1
- pay={}
- for k in range(i,len(buf)-187,188):
-  q=buf[k:k+188]
-  if q[0]!=0x47:continue
-  pid=((q[1]&31)<<8)|q[2];af=(q[3]>>4)&3
-  if af==2:continue
-  o=5+q[4] if af==3 else 4
-  if q[1]&64:
-   if q[o:o+3]==bytes([0,0,1]) and 0xE0<=q[o+3]<=0xEF and o+9<188:pay[pid]=bytearray(q[o+9+q[o+8]:])
-   else:pay.pop(pid,None);continue
-  elif pid in pay:pay[pid]+=q[o:]
-  else:continue
-  d=bytes(pay[pid]);m=SPSR.search(d)
-  if m:
-   e=d.find(bytes([0,0,1]),m.end())
-   if e>0:
-    try:return spsi(d[m.end()-1:e])
-    except Exception:return None
- return None
-def pkf(u,out,dl):
- w=requests.Session();w.headers.update(s.headers);r=None
- try:
-  if HLSP:
-   r=w.get(u,timeout=(1.5,1.5))
-   if r.status_code==509:out[u]=("509",None);return
-   r.raise_for_status();L=[x.strip() for x in r.text.splitlines() if x.strip()]
-   if "#EXT-X-ENDLIST" in L:out[u]=("bad",None);return
-   v=[(int(m_.group(1)) if (m_:=re.search(r"BANDWIDTH=([0-9]+)",x)) else 0,L[i+1]) for i,x in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
-   if v:
-    r=w.get(up.urljoin(r.url,max(v)[1]),timeout=(1.5,1.5))
-    if r.status_code==509:out[u]=("509",None);return
-    r.raise_for_status();L=[x.strip() for x in r.text.splitlines() if x.strip()]
-   sg=[x for x in L if not x.startswith("#")]
-   if not sg:out[u]=("bad",None);return
-   if any(x.startswith("#EXT-X-MAP") or (x.startswith("#EXT-X-KEY") and "METHOD=NONE" not in x) for x in L):out[u]=("ok",None);return
-   r=w.get(up.urljoin(r.url,sg[-1]),stream=True,timeout=(1.5,1.5))
-  else:r=w.get(u,stream=True,timeout=(1.5,1.5))
-  if r.status_code==509:out[u]=("509",None);return
-  r.raise_for_status()
-  if "html" in (r.headers.get("Content-Type") or "").lower() or r.url.rsplit("/",1)[-1].lower().startswith("black."):out[u]=("bad",None);return
-  b=b""
-  for x in r.raw.stream(16384,decode_content=False):
-   b+=x;i_=hdr(b)
-   if i_:out[u]=("ok",i_);return
-   if len(b)>2000000 or mono()>dl:break
-  out[u]=("unk",None)
- except (requests.exceptions.Timeout,requests.exceptions.ConnectionError):out[u]=("unk",None)
- except Exception:out[u]=("bad",None)
- finally:
-  try:
-   if r is not None:r.close()
-   w.close()
-  except Exception:pass
-RKI={};BADF=set()
-def prepeek():
- global cur
- if not chid.isdigit():return
- fl=FEEDS()
- if len(fl)<2:log("no backup streams on this channel, so not ranking streams; playing it directly");return
- out={};t_=mono();dl=t_+1.5
- for u in fl:threading.Thread(target=pkf,args=(u,out,dl),daemon=True).start()
- while mono()<dl and len(out)<len(fl):time.sleep(0.02)
- res={u:out.get(u,("unk",None)) for u in fl}
- if any(v[0]=="509" for v in res.values()):log("provider refused a stream check (509), so not ranking streams this time; using the channel stream order");return
- for u,(st_,i_) in res.items():
-  if st_=="ok" and i_ and i_[2]:FR[u]=i_[2];FT[u]=time.time()
-  if st_=="bad":BADF.add(u)
- g={"ok":0,"unk":1,"bad":2}
- order=sorted(fl,key=lambda u:(g.get(res[u][0],1),-((res[u][1] or (0,0,0))[1] or 0),-((res[u][1] or (0,0,0))[2] or 0),fl.index(u)))
- for k,u in enumerate(order):RKI[u]=k
- def d_(u):
-  st_,i_=res[u]
-  return "stream %d %s"%(fl.index(u)+1,("%dp %.2f fps"%(i_[1],i_[2]) if i_ and i_[2] else "ok, format unknown") if st_=="ok" else ("no answer yet" if st_=="unk" else "not working"))
- log("checked all %d streams in %.1fs: %s"%(len(fl),mono()-t_,"; ".join(d_(u) for u in order)))
- best=order[0]
- if res[best][0]=="bad":return
- if best!=cur:log("playing stream %d of %d, the best one right now"%(fl.index(best)+1,len(fl)));cur=best
- if res[best][1] and res[best][1][2]:learn(best,res[best][1][2])
- save()
-if not rcur and not rstk:prepeek()
 if rstk:handoff("the previous process got stuck reading this feed")
 while not gone():
  rb=mono()
  try:
-  u_=rck()
-  if u_:fl_=feeds();handoff("stream %d of %d has the frame rate this stream started with and has been stable for a minute"%(fl_.index(u_)+1 if u_ in fl_ else 0,len(fl_)),fl=fl_,to=u_);continue
   r=s.get(media or cur,timeout=(5,10));r.raise_for_status()
   L=[x.strip() for x in r.text.splitlines() if x.strip()]
   if not L or not L[0].startswith("#EXTM3U"):raise ValueError("response is not an m3u8 playlist")
@@ -1458,7 +1248,6 @@ while not gone():
    if q["m"]!=cmap:
     if cmap is not None:enq(["remux","new init segment",0,None]);sig=None
     i=s.get(q["m"],timeout=(3,5));i.raise_for_status();enq(["init",i.content,0]);cmap=q["m"]
-   if pend or cur not in FR:learn(cur,vfps(d,q["d"] or tgt))
    p0=pts0(d)
    if PSK is not None and 3<abs(PSK)<WR-60:
     nsk+=1
@@ -1539,9 +1328,6 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
   read at playback speed, with at most 60 s queued.
-- **Picking the best stream and keeping the frame rate** work as in the HLS profile. With no
-  playlist to read, each check opens the stream itself for a moment, and the frame-rate check that
-  leads back to a matching stream only runs while the reserve is at least half full.
 - Everything else matches the HLS profile: backups checked before switching, failed feeds left
   alone for a while, smooth pacing through a switch, recording extensions (see
   [Recordings](#recordings)), gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
@@ -1707,46 +1493,15 @@ def iskey(p):
  return False
 st="/tmp/tsloop-"+hashlib.md5((("ch"+chid) if chid.isdigit() else src).encode()).hexdigest()+".json"
 last={};dl={};rcur=None;wlead=0.0;prim=None;sl=threading.Lock();resumed=False;rg=0.0
-fps0=None;rnx=0.0;rok={};FR={};FT={}
-try:
- j_=json.load(open(st))
- FT={k:v for k,v in j_.get("ft",{}).items() if time.time()-v<86400};FR={k:float(v) for k,v in j_.get("fr",{}).items() if k in FT}
-except Exception:pass
-try:
- for f_ in os.listdir(os.path.dirname(st)):
-  p_=os.path.join(os.path.dirname(st),f_)
-  if f_.startswith(("hlsloop-","tsloop-")) and "-jobs-" not in f_ and time.time()-os.path.getmtime(p_)>86400:os.remove(p_)
-except Exception:pass
-def svfr():pass
-def rmatch(u):
- return bool(fps0 and FR.get(u) and abs(FR[u]/fps0-1)<0.1)
-def learn(u,r_):
- global fps0
- if not r_:return
- if fps0 is None:fps0=r_;log("this stream started at %.2f fps; when switching, backups with the same frame rate come first"%r_)
- FR[u]=r_;FT[u]=time.time()
-fcn=[0,0.0];rtn=False
-def rck():
- global rnx
- if fps0 is None or stalled or rmatch(cur) or not FR.get(cur) or mono()<rnx or mono()-fst<120 or Qs[0]<RES/2:return None
- rnx=mono()+30
- for u in feeds(True):
-  if u!=cur and rmatch(u) and fbad.get(u,[0])[0]<=mono():
-   r_=probe(u)
-   if r_ is None:rok.pop(u,None);return None
-   p_=rok.get(u);rok[u]=(p_[0] if p_ and mono()-p_[1]<45 else mono(),mono())
-   if mono()-rok[u][0]>=60:return (u,r_)
-   r_.close();return None
- return None
 try:
  j=json.load(open(st))
- if time.time()-j["t"]<4 and j.get("src")==src:dl={int(k):v for k,v in j["dl"].items()};last=dict(dl);off=j.get("off",0.0);rcur=j.get("cur");prim=j.get("prim");xb=float(j.get("xb",0.0));vpk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));fps0=j.get("f0");vlj=mono() if xb>JB else 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);resumed=True;rg=min(max(j.get("gage",0.0),0.0),FAILT);log("resuming after Dispatcharr restart")
+ if time.time()-j["t"]<4 and j.get("src")==src:dl={int(k):v for k,v in j["dl"].items()};last=dict(dl);off=j.get("off",0.0);rcur=j.get("cur");prim=j.get("prim");xb=float(j.get("xb",0.0));vpk=max(1,int(j.get("pk",1)));rstk=bool(j.get("stk"));vlj=mono() if xb>JB else 0.0;wlead=max(j.get("lead",0.0)-(time.time()-j["t"]),0.0);resumed=True;rg=min(max(j.get("gage",0.0),0.0),FAILT);log("resuming after Dispatcharr restart")
 except Exception:pass
 cur=rcur or src
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"src":src,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"f0":fps0,"fr":dict(FR),"ft":dict(FT),"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"src":src,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 wcur=cur
@@ -1796,7 +1551,7 @@ def probe(u):
  except Exception:pass
  if r is not None:r.close()
  return None
-def handoff(why,to=None,tr=None):
+def handoff(why):
  global stalled,got,cur,pend,sticky,gap,dlv,lpr,prr,fst,ost
  fl=feeds()
  if len(fl)<2:
@@ -1804,24 +1559,20 @@ def handoff(why,to=None,tr=None):
   stalled=True;got=mono();return
  if stalled and mono()-lpr<30:got=mono();return
  lpr=mono();i0=fl.index(cur) if cur in fl else 0;nxt=None;pt=mono()
- if not stalled and not to:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
+ if not stalled:log("stream %d of %d failed; not using it again for %.0fs"%(i0+1,len(fl),mark(cur)))
  cand=[fl[(i0+j)%len(fl)] for j in range(1,len(fl))]
  cand=[u for u in cand if fbad.get(u,[0])[0]<=mono()] or sorted(cand,key=lambda u:fbad.get(u,[0])[0])
- cand.sort(key=lambda u:(u in BADF,(0 if rmatch(u) else (1 if not FR.get(u) else 2)) if fps0 else 0,RKI.get(u,99)))
- if to:cand=[]
  for u in cand:
   if mono()-pt>6:break
   pr=probe(u)
   if pr is not None:nxt=u;break
   log("backup stream %d of %d is not answering; not trying it again for %.0fs"%(fl.index(u)+1,len(fl),mark(u)))
- if to:nxt=to;pr=tr
  if nxt is None:
   if not stalled:ost=got;log(why+"; no backup stream is answering right now, so staying on this feed")
   stalled=True;got=mono();return
  log(why+"; switching to stream %d of %d"%(fl.index(nxt)+1,len(fl)))
  gap=(mono()-ost) if stalled else ((gap or 0.0)+mono()-got if (gap is not None or dlv) else None)
  cur=nxt;prr=[nxt,pr];pend=True;stalled=False;got=mono();sticky=None;dlv=False;hc["e"]=0;fst=mono()
- if fps0 and FR.get(nxt) and not rmatch(nxt):log("stream %d runs at %.2f fps, not %.2f; will move back to a matching stream once one has been stable for a minute"%(fl.index(nxt)+1,FR[nxt],fps0))
 def bye():
  global run
  run=0;save();killall();os._exit(0)
@@ -1991,8 +1742,7 @@ def budget():
  now=mono();qs=Qs[0]
  return max(qs+min(max(wlead,0.0),SIL-(now-wput if qs<=0 else 0))-1.0,3.0)
 def conn(r):
- global last,moff,qend,got,prim,pend,resumed,stalled,ph,short,le,lrf,avok,rtn
- fcn[0]=0;fcn[1]=0.0
+ global last,moff,qend,got,prim,pend,resumed,stalled,ph,short,le,lrf,avok
  rem=b"";pv=True;rest=[];mh=collections.deque();ta=0.0;lc=None;mode=None;pre=[];sync=set();t0=mono();media=0.0;hold={};seen=set();exact=set();kwait=set();gate=None;kt=mono();jump=None;nowait=False;beh=None;bs=[];hw=None;tw=None;hs=[];fin=False;c0=mono();lb={};lmin=None
  def emit(pk):
   global last,qend,got,prim,stalled,ph,gap,dlv,lv
@@ -2013,7 +1763,6 @@ def conn(r):
      a=dif(ts,last[pid])
      if not -1<a<5:jump=a;return
      if 0<a<5:adv+=a;pd=a
-     fcn[0]+=1;fcn[1]+=max(a,0.0)
      if a>0:last[pid]=ts
     else:last[pid]=ts
     qend=last[pid]+moff
@@ -2082,10 +1831,6 @@ def conn(r):
  for chunk in rdch():
   rb=mono();ta+=min(rb-lc,2.0) if lc else 0.0;lc=rb
   if not run or gone():break
-  if fcn[1]>=10:learn(cur,fcn[0]/fcn[1]);fcn[0]=0;fcn[1]=0.0
-  x_=rck()
-  if x_:
-   fl_=feeds(True);handoff("stream %d of %d has the frame rate this stream started with and has been stable for a minute"%(fl_.index(x_[0])+1 if x_[0] in fl_ else 0,len(fl_)),to=x_[0],tr=x_[1]);rtn=True;break
   pw=mode is None and pre and pend
   nr=min(rto,2.5) if pw else max(4.0,min(STALL,Qs[0]-RLOW))
   if nr>rto+0.5 or (pw and nr<rto):
@@ -2193,145 +1938,6 @@ def conn(r):
    while mh[0][0]<mono()-20:mh.popleft()
    if Qs[0]<RLOW and mono()-mh[0][0]>19 and ta-mh[0][2]>15 and media-mh[0][1]<0.85*(ta-mh[0][2]):raise ValueError("feed slower than real time (%.1fs of video in %.0fs)"%(media-mh[0][1],ta-mh[0][2]))
  return mono()-t0,media
-HLSP=False
-def FEEDS():return feeds(True)
-def rbs(b):
- o=bytearray();z=0
- for c in b:
-  if z>=2 and c==3:z=0;continue
-  o.append(c);z=z+1 if c==0 else 0
- return bytes(o)+bytes(32)
-class BR_:
- def __init__(s_,b):s_.b=b;s_.i=0
- def u(s_,n=1):
-  v=0
-  for _ in range(n):v=(v<<1)|((s_.b[s_.i>>3]>>(7-(s_.i&7)))&1);s_.i+=1
-  return v
- def ue(s_):
-  z=0
-  while not s_.u():z+=1
-  return (1<<z)-1+s_.u(z)
- def se(s_):
-  v=s_.ue();return (v+1)//2 if v&1 else -(v//2)
-def spsi(nal):
- b=BR_(rbs(nal[1:]));pf=b.u(8);b.u(16);b.ue()
- if pf in (100,110,122,244,44,83,86,118,128,138,139,134,135):
-  cf=b.ue()
-  if cf==3:b.u()
-  b.ue();b.ue();b.u()
-  if b.u():
-   for k in range(8 if cf!=3 else 12):
-    if b.u():
-     l=n=8
-     for _ in range(16 if k<6 else 64):
-      if n:n=(l+b.se()+256)%256
-      l=n or l
- b.ue();t=b.ue()
- if t==0:b.ue()
- elif t==1:
-  b.u();b.se();b.se()
-  for _ in range(b.ue()):b.se()
- b.ue();b.u();wm=b.ue();hm=b.ue();fm=b.u()
- if not fm:b.u()
- b.u();c=[0,0,0,0]
- if b.u():c=[b.ue() for _ in range(4)]
- w=(wm+1)*16-2*(c[0]+c[1]);h=(2-fm)*(hm+1)*16-2*(2-fm)*(c[2]+c[3]);f=None
- if b.u():
-  if b.u():
-   if b.u(8)==255:b.u(32)
-  if b.u():b.u()
-  if b.u():
-   b.u(4)
-   if b.u():b.u(24)
-  if b.u():b.ue();b.ue()
-  if b.u():
-   nu=b.u(32);tsc=b.u(32)
-   if nu:f=round(tsc/(2.0*nu),3)
- return (w,h,f)
-SPSR=re.compile(b"\x00\x00\x01[\x27\x47\x67]")
-def hdr(buf):
- i=0
- while i<len(buf)-376 and not (buf[i]==0x47 and buf[i+188]==0x47):i+=1
- pay={}
- for k in range(i,len(buf)-187,188):
-  q=buf[k:k+188]
-  if q[0]!=0x47:continue
-  pid=((q[1]&31)<<8)|q[2];af=(q[3]>>4)&3
-  if af==2:continue
-  o=5+q[4] if af==3 else 4
-  if q[1]&64:
-   if q[o:o+3]==bytes([0,0,1]) and 0xE0<=q[o+3]<=0xEF and o+9<188:pay[pid]=bytearray(q[o+9+q[o+8]:])
-   else:pay.pop(pid,None);continue
-  elif pid in pay:pay[pid]+=q[o:]
-  else:continue
-  d=bytes(pay[pid]);m=SPSR.search(d)
-  if m:
-   e=d.find(bytes([0,0,1]),m.end())
-   if e>0:
-    try:return spsi(d[m.end()-1:e])
-    except Exception:return None
- return None
-def pkf(u,out,dl):
- w=requests.Session();w.headers.update(s.headers);r=None
- try:
-  if HLSP:
-   r=w.get(u,timeout=(1.5,1.5))
-   if r.status_code==509:out[u]=("509",None);return
-   r.raise_for_status();L=[x.strip() for x in r.text.splitlines() if x.strip()]
-   if "#EXT-X-ENDLIST" in L:out[u]=("bad",None);return
-   v=[(int(m_.group(1)) if (m_:=re.search(r"BANDWIDTH=([0-9]+)",x)) else 0,L[i+1]) for i,x in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
-   if v:
-    r=w.get(up.urljoin(r.url,max(v)[1]),timeout=(1.5,1.5))
-    if r.status_code==509:out[u]=("509",None);return
-    r.raise_for_status();L=[x.strip() for x in r.text.splitlines() if x.strip()]
-   sg=[x for x in L if not x.startswith("#")]
-   if not sg:out[u]=("bad",None);return
-   if any(x.startswith("#EXT-X-MAP") or (x.startswith("#EXT-X-KEY") and "METHOD=NONE" not in x) for x in L):out[u]=("ok",None);return
-   r=w.get(up.urljoin(r.url,sg[-1]),stream=True,timeout=(1.5,1.5))
-  else:r=w.get(u,stream=True,timeout=(1.5,1.5))
-  if r.status_code==509:out[u]=("509",None);return
-  r.raise_for_status()
-  if "html" in (r.headers.get("Content-Type") or "").lower() or r.url.rsplit("/",1)[-1].lower().startswith("black."):out[u]=("bad",None);return
-  b=b""
-  for x in r.raw.stream(16384,decode_content=False):
-   b+=x;i_=hdr(b)
-   if i_:out[u]=("ok",i_);return
-   if len(b)>2000000 or mono()>dl:break
-  out[u]=("unk",None)
- except (requests.exceptions.Timeout,requests.exceptions.ConnectionError):out[u]=("unk",None)
- except Exception:out[u]=("bad",None)
- finally:
-  try:
-   if r is not None:r.close()
-   w.close()
-  except Exception:pass
-RKI={};BADF=set()
-def prepeek():
- global cur
- if not chid.isdigit():return
- fl=FEEDS()
- if len(fl)<2:log("no backup streams on this channel, so not ranking streams; playing it directly");return
- out={};t_=mono();dl=t_+1.5
- for u in fl:threading.Thread(target=pkf,args=(u,out,dl),daemon=True).start()
- while mono()<dl and len(out)<len(fl):time.sleep(0.02)
- res={u:out.get(u,("unk",None)) for u in fl}
- if any(v[0]=="509" for v in res.values()):log("provider refused a stream check (509), so not ranking streams this time; using the channel stream order");return
- for u,(st_,i_) in res.items():
-  if st_=="ok" and i_ and i_[2]:FR[u]=i_[2];FT[u]=time.time()
-  if st_=="bad":BADF.add(u)
- g={"ok":0,"unk":1,"bad":2}
- order=sorted(fl,key=lambda u:(g.get(res[u][0],1),-((res[u][1] or (0,0,0))[1] or 0),-((res[u][1] or (0,0,0))[2] or 0),fl.index(u)))
- for k,u in enumerate(order):RKI[u]=k
- def d_(u):
-  st_,i_=res[u]
-  return "stream %d %s"%(fl.index(u)+1,("%dp %.2f fps"%(i_[1],i_[2]) if i_ and i_[2] else "ok, format unknown") if st_=="ok" else ("no answer yet" if st_=="unk" else "not working"))
- log("checked all %d streams in %.1fs: %s"%(len(fl),mono()-t_,"; ".join(d_(u) for u in order)))
- best=order[0]
- if res[best][0]=="bad":return
- if best!=cur:log("playing stream %d of %d, the best one right now"%(fl.index(best)+1,len(fl)));cur=best
- if res[best][1] and res[best][1][2]:learn(best,res[best][1][2])
- save()
-if not resumed and not rstk:prepeek()
 if rstk:handoff("the previous process got stuck reading this feed")
 while not gone():
  rb=mono()
@@ -2362,7 +1968,6 @@ while not gone():
   try:dur,media=conn(r)
   finally:r.close()
   if gone():break
-  if rtn:rtn=False;continue
   if media<15 and dur<60:short+=1
   else:short=0
   if short>=3:
