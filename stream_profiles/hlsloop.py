@@ -22,17 +22,17 @@
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# video plays at its real speed. One exception, transcoding only: if a
-# provider outage drains the reserve below half, playback slows by 0.5%
-# (fast motion) to 3% (still scenes), pitch unchanged, switched live with
-# no restart, until the reserve is back to three quarters, then eases
-# back to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# video plays at its real speed, except while the reserve refills: if a
+# provider problem keeps the reserve below half for 30 seconds, video and
+# audio play 3% slower together (pitch unchanged) until it is back to
+# three quarters. Costs a few seconds more delay
+# and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
 TRANSCODE = "off"
 TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")}
-(TC_HEIGHT, TC_FPS, TC_VBITRATE) = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""))
+TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""))
 TRANSCODE = TC_HEIGHT > 0
 TC_LEAD = 4.0
 import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
@@ -41,7 +41,7 @@ try:
 except ImportError:
     print("[hlsloop] python requests module not found", file=sys.stderr)
     sys.exit(1)
-(src, ua) = (sys.argv[1], sys.argv[2])
+src, ua = (sys.argv[1], sys.argv[2])
 chid = sys.argv[3] if len(sys.argv) > 3 else ""
 cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/")
 HSX = re.compile("(/live/[^/?]+/[^/?]+/[0-9]+)\\.ts(?=$|\\?)")
@@ -95,11 +95,9 @@ ff = None
 sig = None
 cmap = None
 off = 0.0
-TK = 1.0
 tout = 0.0
 HW = None
 STL = collections.deque()
-ltk = -1000000000.0
 
 def hwpick():
     global HW
@@ -127,130 +125,40 @@ def hwpick():
             pass
     log("transcoding with " + {"vaapi": "Intel/AMD graphics (VAAPI)", "nvenc": "NVIDIA graphics (NVENC)", "cpu": "the CPU (no hardware encoder found)"}[HW])
     return HW
-ZB = 20000 + os.getpid() % 7000 * 4
-ZP = [ZB + 2]
-zerr = [0]
-
-def sxp(k):
-    return "if(isnan(PREV_OUTPTS),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)" % k
-
-def zsend(port, msg):
-    import socket, struct
-    c = socket.create_connection(("127.0.0.1", port), timeout=3)
-
-    def rx(n):
-        b = b""
-        while len(b) < n:
-            x = c.recv(n - len(b))
-            if not x:
-                raise OSError("closed")
-            b += x
-        return b
-
-    def frame():
-        f = rx(1)[0]
-        n = struct.unpack(">Q", rx(8))[0] if f & 2 else rx(1)[0]
-        return (f, rx(n))
-
-    def send(f, b):
-        c.sendall((bytes([f | 2]) + struct.pack(">Q", len(b)) if len(b) > 255 else bytes([f, len(b)])) + b)
-    try:
-        c.sendall(bytes([255]) + bytes(8) + bytes([127, 3, 0]) + b"NULL" + bytes(16) + bytes(32))
-        rx(64)
-        send(4, bytes([5]) + b"READY" + bytes([11]) + b"Socket-Type" + struct.pack(">I", 3) + b"REQ")
-        frame()
-        send(1, b"")
-        send(0, msg.encode())
-        r = b""
-        while True:
-            (f, b) = frame()
-            if b:
-                r = b
-            if not f & 1:
-                break
-        return r.decode(errors="ignore")
-    finally:
-        c.close()
-ZQ = [1.0, False]
-
-def zset(k):
-    ZQ[0] = k
-    if ZQ[1]:
-        return
-    ZQ[1] = True
-
-    def go():
-        sent = None
-        er = None
-        try:
-            for i in range(40):
-                k_ = ZQ[0]
-                try:
-                    a = zsend(ZP[0], "setpts@v expr " + sxp(k_))
-                    b = zsend(ZP[0] + 1, "atempo@a tempo %.4f" % (1 / k_))
-                    if not (a.startswith("0") and b.startswith("0")):
-                        raise OSError(a + " / " + b)
-                    sent = k_
-                    if zerr[0]:
-                        zerr[0] = 0
-                        log("playback speed control working again")
-                    if ZQ[0] == k_:
-                        return
-                    continue
-                except Exception as e:
-                    er = e
-                time.sleep(0.25)
-            if not zerr[0]:
-                zerr[0] = 1
-                log("could not change playback speed after 10s (%s)" % er)
-        finally:
-            ZQ[1] = False
-            if sent is not None and ZQ[0] != sent:
-                zset(ZQ[0])
-    threading.Thread(target=go, daemon=True).start()
-RFS = {"on": False, "b": bytearray(), "t": 0.0, "m": None, "busy": False}
-
-def motm(d):
-    try:
-        o = sp.run([FF, "-hide_banner", "-v", "info", "-t", "2", "-skip_loop_filter", "all", "-i", "pipe:0", "-an", "-vf", "scale=96:54,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"], input=d, capture_output=True, timeout=10).stderr.decode(errors="ignore")
-        v = [float(x) for x in re.findall("YAVG=([0-9.]+)", o)]
-        RFS["m"] = sum(v) / len(v) if v else None
-    except Exception:
-        RFS["m"] = None
-    RFS["busy"] = False
-
-def mot(d):
-    if RFS["on"] and (not RFS["busy"]):
-        RFS["busy"] = True
-        threading.Thread(target=motm, args=(bytes(d[:6000000]),), daemon=True).start()
-    return RFS["m"]
-
-def spd(m):
-    if m is None:
-        return 1.015
-    return 1.03 - 0.025 * min(max((m - 0.5) / 3.5, 0.0), 1.0)
-
-def rstep(m, now, qs, lo, hi):
-    global TK, ltk
-    if not RFS["on"] and now - ltk > 60 and (qs < lo):
-        RFS["on"] = True
-        ltk = now
-        log("reserve down to %.0fs; slowing playback 0.5 to 3 percent, depending on motion, until it is back to %.0fs" % (qs, hi))
-    elif RFS["on"] and qs >= hi:
-        RFS["on"] = False
-        RFS["m"] = None
-        ltk = now
-        log("reserve back to %.0fs; easing back to real speed" % qs)
-    want = spd(m) if RFS["on"] else 1.0
-    if abs(want - TK) >= 0.0025:
-        TK = round(TK + max(-0.005, min(0.005, want - TK)), 4)
-        zset(TK)
 
 def frs(f):
-    for (a, b) in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
+    for a, b in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
         if abs(f - a) < 0.01:
             return b
     return "%g" % f
+SLOW = 1.03
+SPD = 1.0
+SPA = 1.0
+RQ = collections.deque(maxlen=6000)
+lowt = None
+ltk = -1000000000.0
+
+def rstep(now, qs, lo, hi, win):
+    global SPD, lowt, ltk
+    while RQ and now - RQ[0][0] > win:
+        RQ.popleft()
+    qm = min((q for _, q in RQ))
+    if SPD == 1.0:
+        if qm >= lo:
+            lowt = None
+            return
+        if lowt is None:
+            lowt = now
+        if now - lowt < 30 or now - ltk < 60:
+            return
+        SPD = SLOW
+        lowt = None
+        ltk = now
+        remux("reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi))
+    elif qm >= hi:
+        SPD = 1.0
+        ltk = now
+        remux("reserve back to %.0fs; back to real speed" % qm)
 
 def ffcmd():
     b = [FF, "-hide_banner", "-loglevel", "error", "-fflags", "+discardcorrupt", "-probesize", "1000000", "-analyzeduration", "1000000"]
@@ -259,7 +167,7 @@ def ffcmd():
     h = hwpick()
     fr = frs(TC_FPS)
     g = str(int(round(2 * TC_FPS)))
-    vf = "zmq=b=tcp\\\\://127.0.0.1\\\\:%d,bwdif=mode=send_frame:deint=interlaced,setpts@v=expr=%s,fps=%s,scale=-2:%d:flags=fast_bilinear" % (ZP[0], chr(39) + sxp(TK) + chr(39), fr, TC_HEIGHT)
+    vf = "bwdif=mode=send_frame:deint=interlaced," + ("setpts=(PTS-STARTPTS)*%.4f+STARTPTS," % SPA if SPA != 1.0 else "") + "fps=%s,scale=-2:%d:flags=fast_bilinear" % (fr, TC_HEIGHT)
     rc = ["-b:v", TC_VBITRATE, "-maxrate", TC_VBITRATE, "-bufsize", TC_VBITRATE, "-g", g]
     if h == "vaapi":
         b += ["-vaapi_device", "/dev/dri/renderD128"]
@@ -268,19 +176,18 @@ def ffcmd():
         vc = ["-vf", vf + ",format=yuv420p", "-c:v", "h264_nvenc", "-preset", "p4"] + rc + ["-bf", "0"]
     else:
         vc = ["-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast"] + rc
-    af = "azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,atempo@a=tempo=%.4f" % (ZP[0] + 1, 1 / TK)
+    af = "aresample=async=1000" + (",atempo=%.6f" % (1 / SPA) if SPA != 1.0 else "")
     return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4), "-f", "mpegts", "pipe:1"]
 
 def rtgt():
     return dep or 3 * tgt
 
 def remux(why=None):
-    global ff
+    global ff, SPA
     if why:
         log("restarting remuxer: " + why)
     old = ff
-    if TRANSCODE:
-        ZP[0] = ZB + 2 - (ZP[0] - ZB)
+    SPA = SPD
     ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE)
     with fql:
         fq.append(ff)
@@ -306,7 +213,7 @@ def pump():
         if p is None:
             time.sleep(0.05)
             continue
-        (r, _, _) = select.select([p.stdout], [], [], 0.25)
+        r, _, _ = select.select([p.stdout], [], [], 0.25)
         if not r and mono() - rb >= RBT and (not stk):
             stk = True
             skf = True
@@ -363,7 +270,7 @@ def gone():
     try:
         pl = select.poll()
         pl.register(1, select.POLLOUT)
-        return any((e & (select.POLLERR | select.POLLHUP) for (_, e) in pl.poll(0)))
+        return any((e & (select.POLLERR | select.POLLHUP) for _, e in pl.poll(0)))
     except Exception:
         return False
 
@@ -377,7 +284,7 @@ def put(b):
         remux("remuxer rejected data (%s)" % e)
 
 def attrs(x):
-    return {k: v.strip(chr(34)) for (k, v) in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}
+    return {k: v.strip(chr(34)) for k, v in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}
 
 def tsig(d):
     try:
@@ -536,7 +443,7 @@ def feeds():
         import psycopg
         e = os.environ.get
         with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:
-            urls = [hsu(u) for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
+            urls = [hsu(u) for u, in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
     except Exception as x:
         log("could not read backup streams (%s)" % x)
         return [src]
@@ -735,13 +642,13 @@ def watch():
             if og is None:
                 try:
                     og = json.load(open(JF))
-                    og = {a: b for (a, b) in og.items() if isinstance(b, list) and len(b) == 2}
+                    og = {a: b for a, b in og.items() if isinstance(b, list) and len(b) == 2}
                 except Exception:
                     og = {}
 
             def wog():
                 nonlocal og
-                og = {a: b for (a, b) in og.items() if time.time() - b[1] < 86400}
+                og = {a: b for a, b in og.items() if time.time() - b[1] < 86400}
                 tf = JF + ".%d.tmp" % os.getpid()
                 with open(tf, "w") as f:
                     json.dump(og, f)
@@ -802,19 +709,19 @@ def watch():
                 tmap = mono()
                 num = dev = None
                 st = w.get(base + "/settings", timeout=5).json()
-                for (k, v) in st.items():
+                for k, v in st.items():
                     mm = re.fullmatch("m3u\\.src\\.(.+)\\.url", k)
                     if not mm or "/output/m3u" not in str(v):
                         continue
                     t = w.get(v, timeout=20).text.splitlines()
                     ent = [(nm(t[i]), t[i + 1].strip()) for i in range(len(t) - 1) if t[i].startswith("#EXTINF")]
-                    hit = [i for (i, (n, x)) in enumerate(ent) if uid in x]
+                    hit = [i for i, (n, x) in enumerate(ent) if uid in x]
                     if not hit:
                         continue
                     d = "M3U-" + mm.group(1)
                     for tr in range(6):
                         cl = w.get(base + "/devices/%s/channels" % d, timeout=10).json()
-                        if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for (c, (n, x)) in zip(cl, ent))):
+                        if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for c, (n, x) in zip(cl, ent))):
                             break
                         if tr == 0:
                             log("viewer buffer: Channels DVR source %s is out of date, refreshing it" % d)
@@ -926,7 +833,7 @@ def tix(d):
 def tpos(ix, x, dur):
     if x >= ix[-1][0] if ix else True:
         return dur if not ix or x >= ix[-1][0] + 188 else min(ix[-1][1], dur)
-    (lo, hi) = (0, len(ix) - 1)
+    lo, hi = (0, len(ix) - 1)
     while lo < hi:
         md = (lo + hi + 1) // 2
         if ix[md][0] <= x:
@@ -941,7 +848,7 @@ def enq(it):
         Qs[0] += it[2] if it[0] == "seg" else 0
 
 def writer():
-    global wlast, wpart, oend, off, wlead, wb, TK, tout, ltk
+    global wlast, wpart, oend, off, wlead, wb, tout
     lead = wlead
     t = mono()
     cpr = None
@@ -962,6 +869,8 @@ def writer():
             with ql:
                 it = Q[0] if Q else None
                 qs = Qs[0]
+                if TRANSCODE:
+                    RQ.append((now, qs))
                 if it is None:
                     Qs[0] = 0.0
             if it is None:
@@ -995,7 +904,7 @@ def writer():
                 continue
             if TRANSCODE and it[5] == 0 and (mono() - fst > 90):
                 dp_ = dep or 3 * tgt
-                rstep(mot(it[1]), now, qs, dp_ * 0.5, dp_ * 0.75)
+                rstep(now, qs, dp_ * 0.5, dp_ * 0.75, 1.5 * tgt)
             d = it[1]
             if len(it) < 7:
                 it.append(tix(d))
@@ -1006,8 +915,8 @@ def writer():
             put(d[it[5]:it[5] + k])
             it[5] += k
             wpart = [it[3], it[5]]
-            lead += cd * TK
-            tout += cd * TK
+            lead += cd * SPA
+            tout += cd * SPA
             with ql:
                 Qs[0] -= cd
             if it[5] >= len(d):
@@ -1042,7 +951,7 @@ while not gone():
         L = [x.strip() for x in r.text.splitlines() if x.strip()]
         if not L or not L[0].startswith("#EXTM3U"):
             raise ValueError("response is not an m3u8 playlist")
-        v = [(int(m.group(1)) if (m := bw.search(x)) else 0, L[i + 1]) for (i, x) in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
+        v = [(int(m.group(1)) if (m := bw.search(x)) else 0, L[i + 1]) for i, x in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
         if v:
             media = up.urljoin(r.url, max(v)[1])
             continue
@@ -1086,7 +995,7 @@ while not gone():
                 pth = up.urlsplit(u).path
                 b = None
                 if br:
-                    (ln, _, of) = br.partition("@")
+                    ln, _, of = br.partition("@")
                     ln = int(ln)
                     of = int(of) if of else pe.get(pth, 0)
                     pe[pth] = of + ln
@@ -1104,7 +1013,7 @@ while not gone():
                     nid += 1
                 q["n"] = ids[q["p"]]
             if len(ids) > 300:
-                ids = {k: v for (k, v) in ids.items() if v > nid - 100}
+                ids = {k: v for k, v in ids.items() if v > nid - 100}
             if rseen:
                 last = max([q["n"] for q in segs if q["p"] in rseen], default=None)
         rseen = None
@@ -1119,7 +1028,7 @@ while not gone():
             if not {q["p"].rsplit("/", 1)[-1] for q in segs} & {x.rsplit("/", 1)[-1] for x in seen} or last - segs[-1]["n"] > 50 or (lag is not None and mono() - lag > 4 * tgt):
                 log("provider restarted the channel, rejoining at the live edge")
                 bad.clear()
-                k_ = [i for (i, q) in enumerate(segs) if q["p"] in seen]
+                k_ = [i for i, q in enumerate(segs) if q["p"] in seen]
                 new = segs[k_[-1] + 1:] if k_ else segs[-max(2, min(len(segs), int(-(-(mono() - got) // max(tgt, 1))))):]
                 lag = None
                 pend = True

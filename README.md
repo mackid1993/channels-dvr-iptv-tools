@@ -479,26 +479,24 @@ reserve after a long outage. Without it, there is little more the profiles can d
 a different frame rate can upset the player, and a drained reserve only comes back on a retune.
 
 > [!IMPORTANT]
-> **With transcoding on, playback runs slightly slower for a while after a long outage.** If a
-> provider outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile
-> slows playback, with the audio pitch unchanged, until the reserve is back to three quarters
-> (about 45 s on HLS, 16 s on MPEG-TS), then eases back to real speed. The rest of the time video
-> plays at its real speed.
+> **With transcoding on, playback runs 3% slower for a while after a provider problem.** If the
+> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS), video and audio
+> play 3% slower together, with the audio pitch unchanged, until the reserve is back to three
+> quarters (about 45 s on HLS, 16 s on MPEG-TS). The rest of the time video plays at its real speed.
 >
-> - **The rate follows the picture.** For each segment it measures how much the picture changes
->   from frame to frame (on a tiny 96x54 copy, so it costs little CPU). Still scenes such as a news
->   desk are slowed by up to 3%; fast motion such as live sports by as little as 0.5%; in between
->   it scales linearly. If motion can't be measured it uses 1.5%.
-> - **Gentle changes.** The rate moves in steps of at most 0.5% per segment, never in a jump.
-> - **No interruption:** the speed is changed in the running encoder, not by restarting it, so
->   there is no gap in the picture or the sound.
-> - **Refill rate:** between about 0.3 and 1.8 s of reserve per minute depending on the content.
->   A refill takes roughly 10 to 25 minutes on mostly still content and longer during sports.
+> - **Two clean switches per refill.** The encoder is restarted once when the slowdown starts and
+>   once when it ends, with the speed set from the first frame. Nothing is changed in a running
+>   encoder, so audio and video can't drift apart. On MPEG-TS the restart waits for the next
+>   keyframe and corrects for where the audio sits in the stream, so the picture doesn't pause.
+> - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 17 minutes on
+>   HLS and 3 to 5 minutes on MPEG-TS.
+> - **What you might see:** while it runs, a 60 fps source repeats one frame about twice a second.
+>   On a smooth, fast camera pan that can show as a tiny hitch.
 > - **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would
 >   mean stretching its timestamps, which causes crackle or drift. On the normal path the reserve
 >   only comes back on a retune.
 >
-> See [Why 3%](#why-3) for the research behind the rates.
+> See [Why 3%](#why-3) for the research behind the rate.
 
 ### Why 3%
 
@@ -520,9 +518,8 @@ The rate is a trade-off between refilling quickly and staying below what people 
   drift away by about 1.8 s a minute. And someone who knows the slowdown is on and is watching for
   it may believe they see it; the fair test is a blind comparison.
 
-3% is the ceiling, used only on still scenes, where motion changes are hardest to see; fast
-motion, where a slowdown would show soonest, gets as little as 0.5%. Both stay under the motion
-and speech thresholds and under both broadcast precedents. The figures above come from the cited
+3% stays under the motion and speech thresholds and under both broadcast precedents, and it
+refills quickly enough that a refill is usually over within a quarter of an hour. The figures above come from the cited
 studies and are approximate.
 
 ### Why turn it on
