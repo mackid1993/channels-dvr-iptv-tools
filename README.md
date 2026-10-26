@@ -482,7 +482,8 @@ a different frame rate can upset the player, and a drained reserve only comes ba
 > provider outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile
 > plays video 3% slower, with the audio pitch unchanged, until the reserve is back to three
 > quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it returns to real speed. That refills
-> about 1.8 s of reserve per minute, so a typical refill takes 5 to 20 minutes. The rest of the
+> about 1.8 s of reserve per minute, so a refill takes about 8 to 25 minutes on HLS and 4 to 9
+> minutes on MPEG-TS, depending on how far the reserve dropped. The rest of the
 > time video plays at its real speed. Each switch restarts the encoder, which can cause one brief
 > audio blip. This only happens with transcoding on: without it, slowing playback would mean
 > stretching audio that is only copied, which causes crackle or drift, so on the normal path the
