@@ -36,10 +36,13 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [Use an Xtream Codes account](#use-an-xtream-codes-account)
 - [Recordings](#recordings)
 - [Files the profiles write](#files-the-profiles-write)
+- [Transcoding (optional)](#transcoding-optional)
+  - [Why turn it on](#why-turn-it-on)
+  - [Settings](#settings)
+  - [Use a GPU](#use-a-gpu)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
-  - [Transcoding (optional)](#transcoding-optional)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
   - [Recordings](#recordings-1)
   - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
@@ -463,6 +466,82 @@ written, and nothing is written outside the container.
 To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-*.json
 /tmp/tsloop-*.json` inside the container) while nothing is playing.
 
+## Transcoding (optional)
+
+Both stream profiles can re-encode video instead of passing it through. It's off by default.
+
+### Why turn it on
+
+- **Backups with a different frame rate or resolution stop bothering the player.** Every feed
+  leaves Dispatcharr in the same format, so a failover from a 29.97 fps feed to a 59.94 fps one
+  doesn't make Channels DVR (Apple TV in particular) drop frames or drift the audio.
+- **The reserve rebuilds itself after an outage.** When a long provider stall uses up the reserve,
+  the profile plays 3% slower (audio tempo-corrected, so the pitch doesn't change) until the
+  reserve is full again, then goes back to normal speed. Without transcoding, a used-up reserve
+  only comes back when you retune.
+- **The reserve grows on channels that stall a lot.** Its target is 1.5 times the longest stall
+  on that channel in the last 30 minutes, never less than the normal reserve, and at most 150 s
+  (HLS) or 50 s (MPEG-TS). Recording extensions grow with it.
+
+The costs: GPU (or CPU) time, a little picture quality, and a few seconds more delay behind live.
+
+### Settings
+
+At the very top of the profile code:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TRANSCODE` | `False` | `True` turns transcoding on. |
+| `TC_HEIGHT` | `1080` | Output height in pixels (width follows the picture's shape). Use `720` on weaker hardware. |
+| `TC_FPS` | `59.94` | Output frame rate. Set it to the highest rate your provider uses (`50` in 50 Hz countries). Lower feeds repeat frames; higher feeds drop them. |
+| `TC_VBITRATE` | `"8M"` | Video bitrate. `"6M"` is plenty for 720p. |
+| `TC_LEAD` | `8.0` | Seconds of video the player is kept ahead while transcoding (HLS profile). Raise it if the encoder ever pauses long enough to reach the TV. |
+
+Audio is always stereo AAC at 48 kHz.
+
+### Use a GPU
+
+Encoding 1080p60 video on the CPU takes most of a modern core per stream, and small machines
+(Intel N100s, many NAS boxes, ARM) can't keep up at all. A GPU does the encoding in dedicated
+hardware: on an Intel iGPU a stream costs roughly a third of one CPU core, mostly for decoding and
+scaling.
+
+The profile picks an encoder on its own the first time it transcodes and logs which one it used:
+
+1. **Intel Quick Sync or AMD** (VAAPI), if `/dev/dri/renderD128` exists in the container.
+2. **NVIDIA** (NVENC), if the NVIDIA runtime is available.
+3. **The CPU** (`libx264`), otherwise. Use a lower `TC_HEIGHT` and `TC_FPS` if you have to run here.
+
+Dispatcharr's image already includes all three encoders. The container just needs access to the
+GPU:
+
+**Intel or AMD, Docker Compose:**
+```yaml
+services:
+  dispatcharr:
+    devices:
+      - /dev/dri:/dev/dri
+```
+
+**Intel or AMD, `docker run`:** add `--device /dev/dri:/dev/dri`.
+
+**Intel or AMD, Unraid template:** add `--device=/dev/dri` to **Extra Parameters**.
+
+**NVIDIA, Docker Compose** (needs the NVIDIA Container Toolkit, or the Nvidia Driver plugin on
+Unraid):
+```yaml
+services:
+  dispatcharr:
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+```
+
+Recreate the container after the change. To check it, tune a channel and look for
+`transcoding with Intel/AMD graphics (VAAPI)` or `transcoding with NVIDIA graphics (NVENC)` in
+Dispatcharr's log. `transcoding with the CPU` means the container can't see the GPU.
+
 ## HLS stream profile for Dispatcharr and Channels DVR
 
 This is the **HLS profile** (recommended). For providers that only send MPEG-TS, see
@@ -568,64 +647,6 @@ encoder does:
 
 You watch about 60 seconds behind live on providers with 10-second segments (less on providers
 whose playlists are short).
-
-### Transcoding (optional)
-
-At the very top of the profile code there is a switch:
-
-```
-TRANSCODE=False
-TC_HEIGHT=1080
-TC_FPS=59.94
-TC_VBITRATE="8M"
-TC_LEAD=8.0
-```
-
-**`TRANSCODE=False` (default)** copies every stream untouched, with no extra CPU.
-
-**`TRANSCODE=True`** re-encodes every stream to one fixed format (`TC_HEIGHT`p at `TC_FPS`, H.264
-at `TC_VBITRATE`, stereo AAC 48 kHz). What that buys you:
-
-- **Backups with a different frame rate or resolution no longer upset the player.** Every feed
-  leaves Dispatcharr in the same format, so a failover from a 29.97 feed to a 59.94 one doesn't
-  make Channels DVR drop frames or drift the audio.
-- **The reserve rebuilds itself after an outage.** When a long provider stall uses up the reserve,
-  the profile plays 3% slower (audio tempo-adjusted, pitch unchanged) until the reserve is back to
-  its target, then returns to normal speed. Without transcoding the reserve only comes back on a
-  retune.
-- **The reserve target follows the channel.** It is 1.5 times the longest stall seen on the
-  channel in the last 30 minutes (plus the player's head start), never less than the normal
-  reserve, and at most 150 s (HLS) or 50 s (MPEG-TS). A clean channel keeps the normal reserve; a
-  channel that keeps stalling holds more. Recording extensions grow with it.
-
-**Hardware.** The profile picks an encoder on its own the first time it transcodes (and remembers
-it for an hour in `/tmp/hlsloop-hw.txt` or `/tmp/tsloop-hw.txt`): Intel or AMD graphics through
-VAAPI if `/dev/dri/renderD128` exists, otherwise NVIDIA NVENC, otherwise the CPU. Dispatcharr's
-image includes all three encoders, but the container needs the device:
-
-- **Intel Quick Sync / AMD:** add the device to the Dispatcharr container, for example in
-  Docker Compose:
-  ```yaml
-      devices:
-        - /dev/dri:/dev/dri
-  ```
-  (on Unraid's Docker template, add `--device=/dev/dri` to Extra Parameters).
-- **NVIDIA:** run the container with the NVIDIA runtime (`runtime: nvidia` and
-  `NVIDIA_VISIBLE_DEVICES=all`).
-- **No GPU** (many NAS boxes, ARM): it falls back to the CPU (`libx264 veryfast`), which can be
-  too slow for 1080p60 on small machines. Lower `TC_HEIGHT` / `TC_FPS` or leave transcoding off.
-
-**What it costs:** GPU time (on an Intel iGPU the ffmpeg process still uses roughly a third of one
-CPU core per stream for decoding and scaling), a little picture quality, and about a second more
-delay. While transcoding, the player is kept `TC_LEAD` (8) seconds ahead instead of 4, because the
-encoder can pause for a few seconds when the GPU is busy (for example when another container
-shares the same Intel GPU). The encoder also holds a few seconds of video inside it, so whenever its
-output goes quiet for more than 0.7 s the profile keeps feeding it instead of waiting. Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
-speed at most once every 2 minutes.
-
-Log lines: `transcoding with Intel/AMD graphics (VAAPI)` (or NVENC / the CPU) when a stream
-starts, and `restarting remuxer: reserve Ns, target Ns; playing 3% slower to rebuild it` /
-`...; back to normal speed`.
 
 ### Tuner sharing and the buffer, step by step
 
@@ -1454,9 +1475,7 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
   gets a fresh connection for a new burst, at most once every 5 minutes. This can cause the
   occasional small skip on a drifting channel.
-- **Optional transcoding** works as in the HLS profile (same switch at the top of the code; see
-  [Transcoding (optional)](#transcoding-optional)). The reserve target with transcoding on is at
-  most 50 s, since raw TS can only hold what the provider bursts plus what it rebuilds.
+- **Optional transcoding** works as in the HLS profile; see [Transcoding (optional)](#transcoding-optional).
 - **The head start for extra devices is capped** at the burst depth minus 12 s (usually 8-14 s in
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
