@@ -470,11 +470,22 @@ To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hl
 
 Both stream profiles can re-encode video instead of passing it through. It's off by default.
 
+> [!IMPORTANT]
+> **With transcoding on, playback can run 3% slower for a while after a long outage.** If a
+> provider outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile
+> plays video 3% slower, with the audio pitch unchanged, until the reserve is back to three
+> quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it returns to real speed. That refills
+> about 1.8 s of reserve per minute, so a typical refill takes 5 to 20 minutes. The rest of the
+> time video plays at its real speed. Each switch restarts the encoder, which can cause one brief
+> audio blip. This only happens with transcoding on: without it, slowing playback would mean
+> stretching audio that is only copied, which causes crackle or drift, so on the normal path the
+> reserve only comes back on a retune.
+
 ### Why turn it on
 
 Every feed leaves Dispatcharr in the same format, so a failover to a backup with a different frame
 rate or resolution doesn't make Channels DVR (Apple TV in particular) drop frames or drift the
-audio. Video always plays at its real speed.
+audio. It also lets the reserve refill itself after a long outage (see the note above).
 
 The costs: GPU (or CPU) time, a little picture quality, and a few seconds more delay behind live.
 
@@ -851,7 +862,8 @@ switches, or `fetch loop stuck`.
   client at a failover while its decoder resets, and a different frame rate can make some players
   (Channels DVR on Apple TV) drop frames until you tune again. With transcoding off nothing is
   re-encoded to hide it; turn on [transcoding](#transcoding-optional) if it bothers you.
-- **A reserve used up by a long outage** only comes back on a retune.
+- **A reserve used up by a long outage** only comes back on a retune, unless
+  [transcoding](#transcoding-optional) is on.
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
   when the provider comes back, the profile recovers on its own, but video from the outage is lost.
 - **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
@@ -894,8 +906,10 @@ retune. You can delete the profile afterwards.
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# video always plays at its real speed. Costs a few seconds more delay
-# and some GPU time. Give the Dispatcharr container a GPU
+# video plays at its real speed. One exception, transcoding only: if a
+# provider outage drains the reserve below half, playback runs 3% slower
+# (pitch unchanged) until the reserve is back to three quarters, then
+# returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1328,6 +1342,10 @@ def writer():
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
    if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7):time.sleep(0.02);continue
+   if TRANSCODE and it[5]==0 and now-ltk>60 and mono()-fst>90:
+    dp_=dep or 3*tgt;wk=1.03 if qs<dp_*0.5 else (1.0 if qs>=dp_*0.75 else TK)
+    if wk!=TK:
+     TK=wk;ltk=now;remux(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,dp_,dp_*0.75)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
    d=it[1]
    if len(it)<7:it.append(tix(d))
    k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
@@ -1589,8 +1607,10 @@ stuck feeds and the tuner-sharing head start.
 #
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
-# video always plays at its real speed. Costs a few seconds more delay
-# and some GPU time. Give the Dispatcharr container a GPU
+# video plays at its real speed. One exception, transcoding only: if a
+# provider outage drains the reserve below half, playback runs 3% slower
+# (pitch unchanged) until the reserve is back to three quarters, then
+# returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1637,7 +1657,7 @@ def frs(f):
   if abs(f-a)<0.01:return b
  return "%g"%f
 def ffcmd():
- b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]
+ b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]+(["-probesize","5000000","-analyzeduration","3000000"] if TRANSCODE else [])
  if not TRANSCODE:return b+["-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"]
  h=hwpick();fr=frs(TC_FPS);g=str(int(round(2*TC_FPS)))
  vf="bwdif=mode=send_frame:deint=interlaced,setpts=(PTS-STARTPTS)*%.4f,fps=%s,scale=-2:%d:flags=fast_bilinear"%(TK,fr,TC_HEIGHT)
@@ -1955,6 +1975,10 @@ def writer():
    if it[0]=="remux":
     with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
+   if TRANSCODE and it[6]==0 and now-ltk>60 and mono()-fst>90:
+    wk=1.03 if qs<RES*0.5 else (1.0 if qs>=RES*0.8 else TK)
+    if wk!=TK:
+     TK=wk;ltk=now;remux(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,RES,RES*0.8)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
