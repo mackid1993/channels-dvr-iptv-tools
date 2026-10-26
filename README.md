@@ -479,22 +479,26 @@ reserve after a long outage. Without it, there is little more the profiles can d
 a different frame rate can upset the player, and a drained reserve only comes back on a retune.
 
 > [!IMPORTANT]
-> **With transcoding on, playback runs 3% slower for a while after a long outage.** If a provider
-> outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile switches
-> to 3% slower playback, with the audio pitch unchanged, and stays there until the reserve is back
-> to three quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it switches back to real speed.
-> The rest of the time video plays at its real speed.
+> **With transcoding on, playback runs slightly slower for a while after a long outage.** If a
+> provider outage drains the reserve below half (about 30 s on HLS, 10 s on MPEG-TS), the profile
+> slows playback, with the audio pitch unchanged, until the reserve is back to three quarters
+> (about 45 s on HLS, 16 s on MPEG-TS), then eases back to real speed. The rest of the time video
+> plays at its real speed.
 >
-> - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 25 minutes on
->   HLS and 4 to 9 minutes on MPEG-TS, depending on how far the reserve dropped.
+> - **The rate follows the picture.** For each segment it measures how much the picture changes
+>   from frame to frame (on a tiny 96x54 copy, so it costs little CPU). Still scenes such as a news
+>   desk are slowed by up to 3%; fast motion such as live sports by as little as 0.5%; in between
+>   it scales linearly. If motion can't be measured it uses 1.5%.
+> - **Gentle changes.** The rate moves in steps of at most 0.5% per segment, never in a jump.
 > - **No interruption:** the speed is changed in the running encoder, not by restarting it, so
->   there is no gap in the picture or the sound at either switch.
-> - **Rate:** a single fixed rate of 3%. It doesn't vary with what's on screen.
+>   there is no gap in the picture or the sound.
+> - **Refill rate:** between about 0.3 and 1.8 s of reserve per minute depending on the content.
+>   A refill takes roughly 10 to 25 minutes on mostly still content and longer during sports.
 > - **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would
 >   mean stretching its timestamps, which causes crackle or drift. On the normal path the reserve
 >   only comes back on a retune.
 >
-> See [Why 3%](#why-3) for the research behind the rate.
+> See [Why 3%](#why-3) for the research behind the rates.
 
 ### Why 3%
 
@@ -516,8 +520,9 @@ The rate is a trade-off between refilling quickly and staying below what people 
   drift away by about 1.8 s a minute. And someone who knows the slowdown is on and is watching for
   it may believe they see it; the fair test is a blind comparison.
 
-3% stays under the motion and speech thresholds and under both broadcast precedents, while
-refilling a typical outage in minutes rather than an hour. The figures above come from the cited
+3% is the ceiling, used only on still scenes, where motion changes are hardest to see; fast
+motion, where a slowdown would show soonest, gets as little as 0.5%. Both stay under the motion
+and speech thresholds and under both broadcast precedents. The figures above come from the cited
 studies and are approximate.
 
 ### Why turn it on
@@ -946,9 +951,10 @@ retune. You can delete the profile afterwards.
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
-# provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged, switched live, no restart) until the reserve is
-# back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# provider outage drains the reserve below half, playback slows by 0.5%
+# (fast motion) to 3% (still scenes), pitch unchanged, switched live with
+# no restart, until the reserve is back to three quarters, then eases
+# back to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1026,6 +1032,27 @@ def zset(k):
   except Exception as e:
    if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
  threading.Thread(target=go,daemon=True).start()
+RFS={"on":False,"b":bytearray(),"t":0.0,"m":None,"busy":False}
+def motm(d):
+ try:
+  o=sp.run([FF,"-hide_banner","-v","info","-t","2","-skip_loop_filter","all","-i","pipe:0","-an","-vf","scale=96:54,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG","-f","null","-"],input=d,capture_output=True,timeout=10).stderr.decode(errors="ignore")
+  v=[float(x) for x in re.findall(r"YAVG=([0-9.]+)",o)]
+  RFS["m"]=sum(v)/len(v) if v else None
+ except Exception:RFS["m"]=None
+ RFS["busy"]=False
+def mot(d):
+ if RFS["on"] and not RFS["busy"]:RFS["busy"]=True;threading.Thread(target=motm,args=(bytes(d[:6000000]),),daemon=True).start()
+ return RFS["m"]
+def spd(m):
+ if m is None:return 1.015
+ return 1.03-0.025*min(max((m-0.5)/3.5,0.0),1.0)
+def rstep(m,now,qs,lo,hi):
+ global TK,ltk
+ if not RFS["on"] and now-ltk>60 and qs<lo:RFS["on"]=True;ltk=now;log("reserve down to %.0fs; slowing playback 0.5 to 3 percent, depending on motion, until it is back to %.0fs"%(qs,hi))
+ elif RFS["on"] and qs>=hi:RFS["on"]=False;RFS["m"]=None;ltk=now;log("reserve back to %.0fs; easing back to real speed"%qs)
+ want=spd(m) if RFS["on"] else 1.0
+ if abs(want-TK)>=0.0025:
+  TK=round(TK+max(-0.005,min(0.005,want-TK)),4);zset(TK)
 def frs(f):
  for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
   if abs(f-a)<0.01:return b
@@ -1416,10 +1443,8 @@ def writer():
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
    if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7):time.sleep(0.02);continue
-   if TRANSCODE and it[5]==0 and now-ltk>60 and mono()-fst>90:
-    dp_=dep or 3*tgt;wk=1.03 if qs<dp_*0.5 else (1.0 if qs>=dp_*0.75 else TK)
-    if wk!=TK:
-     TK=wk;ltk=now;zset(wk);log(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,dp_,dp_*0.75)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
+   if TRANSCODE and it[5]==0 and mono()-fst>90:
+    dp_=dep or 3*tgt;rstep(mot(it[1]),now,qs,dp_*0.5,dp_*0.75)
    d=it[1]
    if len(it)<7:it.append(tix(d))
    k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
@@ -1682,9 +1707,10 @@ stuck feeds and the tuner-sharing head start.
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
-# provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged, switched live, no restart) until the reserve is
-# back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# provider outage drains the reserve below half, playback slows by 0.5%
+# (fast motion) to 3% (still scenes), pitch unchanged, switched live with
+# no restart, until the reserve is back to three quarters, then eases
+# back to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1760,6 +1786,27 @@ def zset(k):
   except Exception as e:
    if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
  threading.Thread(target=go,daemon=True).start()
+RFS={"on":False,"b":bytearray(),"t":0.0,"m":None,"busy":False}
+def motm(d):
+ try:
+  o=sp.run([FF,"-hide_banner","-v","info","-t","2","-skip_loop_filter","all","-i","pipe:0","-an","-vf","scale=96:54,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG","-f","null","-"],input=d,capture_output=True,timeout=10).stderr.decode(errors="ignore")
+  v=[float(x) for x in re.findall(r"YAVG=([0-9.]+)",o)]
+  RFS["m"]=sum(v)/len(v) if v else None
+ except Exception:RFS["m"]=None
+ RFS["busy"]=False
+def mot(d):
+ if RFS["on"] and not RFS["busy"]:RFS["busy"]=True;threading.Thread(target=motm,args=(bytes(d[:6000000]),),daemon=True).start()
+ return RFS["m"]
+def spd(m):
+ if m is None:return 1.015
+ return 1.03-0.025*min(max((m-0.5)/3.5,0.0),1.0)
+def rstep(m,now,qs,lo,hi):
+ global TK,ltk
+ if not RFS["on"] and now-ltk>60 and qs<lo:RFS["on"]=True;ltk=now;log("reserve down to %.0fs; slowing playback 0.5 to 3 percent, depending on motion, until it is back to %.0fs"%(qs,hi))
+ elif RFS["on"] and qs>=hi:RFS["on"]=False;RFS["m"]=None;ltk=now;log("reserve back to %.0fs; easing back to real speed"%qs)
+ want=spd(m) if RFS["on"] else 1.0
+ if abs(want-TK)>=0.0025:
+  TK=round(TK+max(-0.005,min(0.005,want-TK)),4);zset(TK)
 def frs(f):
  for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
   if abs(f-a)<0.01:return b
@@ -2084,10 +2131,10 @@ def writer():
    if it[0]=="remux":
     with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
-   if TRANSCODE and it[6]==0 and now-ltk>60 and mono()-fst>90:
-    wk=1.03 if qs<RES*0.5 else (1.0 if qs>=RES*0.8 else TK)
-    if wk!=TK:
-     TK=wk;ltk=now;zset(wk);log(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,RES,RES*0.8)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
+   if TRANSCODE and it[6]==0 and mono()-fst>90:
+    if len(RFS["b"])<8000000:RFS["b"]+=it[1]
+    RFS["t"]+=it[2]
+    if RFS["t"]>=4:m_=mot(bytes(RFS["b"]));RFS["b"]=bytearray();RFS["t"]=0.0;rstep(m_,now,qs,RES*0.5,RES*0.8)
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
