@@ -619,7 +619,8 @@ image includes all three encoders, but the container needs the device:
 CPU core per stream for decoding and scaling), a little picture quality, and about a second more
 delay. While transcoding, the player is kept `TC_LEAD` (8) seconds ahead instead of 4, because the
 encoder can pause for a few seconds when the GPU is busy (for example when another container
-shares the same Intel GPU). Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
+shares the same Intel GPU). The encoder also holds a few seconds of video inside it, so whenever its
+output goes quiet for more than 0.7 s the profile keeps feeding it instead of waiting. Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
 speed at most once every 2 minutes.
 
 Log lines: `transcoding with Intel/AMD graphics (VAAPI)` (or NVENC / the CPU) when a stream
@@ -925,6 +926,7 @@ def remux(why=None):
   shut[old.pid]=mono()
   try:old.stdin.close()
   except Exception:pass
+OWT=[mono()]
 NUL=(b"\x47\x1f\xff\x10"+b"\xff"*184)*7
 def pump():
  global skf
@@ -954,7 +956,7 @@ def pump():
    elif p.poll() is not None:time.sleep(0.05)
    continue
   try:
-   while b:n=os.write(1,b);b=b[n:];ob+=n
+   while b:n=os.write(1,b);b=b[n:];ob+=n;OWT[0]=mono()
    if ka is not None:inc("ka",mono()-ka);log("output: video flowing again after %.1fs without video"%(mono()-ka));ka=None
    lw=mono()
   except OSError:bye()
@@ -1286,7 +1288,7 @@ def writer():
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
-   if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
+   if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7):time.sleep(0.02);continue
    if TRANSCODE and it[5]==0 and now-ltk>120:
     rt_=rtgt();wk=1.03 if qs<rt_-20 else (1.0 if qs>=rt_ else TK)
     if wk!=TK:
