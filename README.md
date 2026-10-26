@@ -972,10 +972,10 @@ This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsl
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
-TRANSCODE = "off";TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};(TC_HEIGHT, TC_FPS, TC_VBITRATE) = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 4.0;import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
+TRANSCODE = "off";TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 4.0;import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found", file=sys.stderr);sys.exit(1)
-(src, ua) = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/");HSX = re.compile("(/live/[^/?]+/[^/?]+/[0-9]+)\\.ts(?=$|\\?)")
+src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/");HSX = re.compile("(/live/[^/?]+/[^/?]+/[0-9]+)\\.ts(?=$|\\?)")
 def hsu(u):return HSX.sub("\\1.m3u8", u or "", count=1)
 if HSX.search(src):src = hsu(src);print("[hlsloop stream] input: provider stream URL is MPEG-TS; using its HLS form", file=sys.stderr, flush=True)
 FF = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg";s = requests.Session();s.headers["User-Agent"] = ua;mono = time.monotonic;BUSY = (429, 503, 509);AV = {1, 2, 3, 4, 6, 15, 17, 27, 36, 129, 135};run = 1;CL = 4.0;JB = 5.0;xb = 0.0;pk = 1;lj = 0.0;RF = 30.0;WR = 95443.717688888;fq = collections.deque();fql = threading.Lock();shut = {};wb = time.monotonic();rb = time.monotonic();RBT = 45.0;skf = False;rstk = False;DEADT = 60.0;PM = 45.0;LG = threading.Lock();CNT = collections.Counter();CK = threading.Lock();ns = 0
@@ -1018,7 +1018,7 @@ def zsend(port, msg):
  try:
   c.sendall(bytes([255]) + bytes(8) + bytes([127, 3, 0]) + b"NULL" + bytes(16) + bytes(32));rx(64);send(4, bytes([5]) + b"READY" + bytes([11]) + b"Socket-Type" + struct.pack(">I", 3) + b"REQ");frame();send(1, b"");send(0, msg.encode());r = b""
   while True:
-   (f, b) = frame()
+   f, b = frame()
    if b:r = b
    if not f & 1:break
   return r.decode(errors="ignore")
@@ -1065,7 +1065,7 @@ def rstep(m, now, qs, lo, hi):
  want = spd(m) if RFS["on"] else 1.0
  if abs(want - TK) >= 0.0025:TK = round(TK + max(-0.005, min(0.005, want - TK)), 4);zset(TK)
 def frs(f):
- for (a, b) in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
+ for a, b in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
   if abs(f - a) < 0.01:return b
  return "%g" % f
 def ffcmd():
@@ -1094,7 +1094,7 @@ def pump():
  while True:
   with fql:p = fq[0] if fq else None;more = len(fq) > 1
   if p is None:time.sleep(0.05);continue
-  (r, _, _) = select.select([p.stdout], [], [], 0.25)
+  r, _, _ = select.select([p.stdout], [], [], 0.25)
   if not r and mono() - rb >= RBT and (not stk):stk = True;skf = True;log("input: fetch loop stuck for %.0fs, stopping keepalive so Dispatcharr restarts the stream" % (mono() - rb))
   elif stk and mono() - rb < RBT:stk = False;skf = False
   if not r and mono() - lw > 2 and (not ob % 188) and (mono() - wb < 10) and (mono() - rb < RBT):
@@ -1121,14 +1121,14 @@ def pump():
    lw = mono()
   except OSError:bye()
 def gone():
- try:pl = select.poll();pl.register(1, select.POLLOUT);return any((e & (select.POLLERR | select.POLLHUP) for (_, e) in pl.poll(0)))
+ try:pl = select.poll();pl.register(1, select.POLLOUT);return any((e & (select.POLLERR | select.POLLHUP) for _, e in pl.poll(0)))
  except Exception:return False
 def put(b):
  try:ff.stdin.write(b);ff.stdin.flush()
  except Exception as e:
   if gone():bye()
   remux("remuxer rejected data (%s)" % e)
-def attrs(x):return {k: v.strip(chr(34)) for (k, v) in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}
+def attrs(x):return {k: v.strip(chr(34)) for k, v in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}
 def tsig(d):
  try:
   if not d or d[0] != 71:return None
@@ -1200,7 +1200,7 @@ def feeds():
  if not chid.isdigit():return [src]
  try:
   import psycopg;e = os.environ.get
-  with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:urls = [hsu(u) for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
+  with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:urls = [hsu(u) for u, in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
  except Exception as x:log("could not read backup streams (%s)" % x);return [src]
  m = XC.search(src)
  if m:urls = [XC.sub("/%s/%s/%s/" % (mm.group(1), m.group(2), m.group(3)), u, count=1) if (mm := XC.search(u)) and up.urlsplit(u).netloc == up.urlsplit(src).netloc else u for u in urls]
@@ -1268,10 +1268,10 @@ def watch():
    with ql:rv = min(Qs[0] + max(wlead, 0.0), rtgt() + tgt)
    ad = min(int(rv + PM), 180);now_ = time.time()
    if og is None:
-    try:og = json.load(open(JF));og = {a: b for (a, b) in og.items() if isinstance(b, list) and len(b) == 2}
+    try:og = json.load(open(JF));og = {a: b for a, b in og.items() if isinstance(b, list) and len(b) == 2}
     except Exception:og = {}
    def wog():
-    nonlocal og;og = {a: b for (a, b) in og.items() if time.time() - b[1] < 86400};tf = JF + ".%d.tmp" % os.getpid()
+    nonlocal og;og = {a: b for a, b in og.items() if time.time() - b[1] < 86400};tf = JF + ".%d.tmp" % os.getpid()
     with open(tf, "w") as f:json.dump(og, f)
     os.replace(tf, JF)
    for jb in jw.get(base + "/dvr/jobs", timeout=5).json() or []:
@@ -1304,15 +1304,15 @@ def watch():
      time.sleep(5);continue
    if mono() - tmap > 300:
     tmap = mono();num = dev = None;st = w.get(base + "/settings", timeout=5).json()
-    for (k, v) in st.items():
+    for k, v in st.items():
      mm = re.fullmatch("m3u\\.src\\.(.+)\\.url", k)
      if not mm or "/output/m3u" not in str(v):continue
-     t = w.get(v, timeout=20).text.splitlines();ent = [(nm(t[i]), t[i + 1].strip()) for i in range(len(t) - 1) if t[i].startswith("#EXTINF")];hit = [i for (i, (n, x)) in enumerate(ent) if uid in x]
+     t = w.get(v, timeout=20).text.splitlines();ent = [(nm(t[i]), t[i + 1].strip()) for i in range(len(t) - 1) if t[i].startswith("#EXTINF")];hit = [i for i, (n, x) in enumerate(ent) if uid in x]
      if not hit:continue
      d = "M3U-" + mm.group(1)
      for tr in range(6):
       cl = w.get(base + "/devices/%s/channels" % d, timeout=10).json()
-      if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for (c, (n, x)) in zip(cl, ent))):break
+      if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for c, (n, x) in zip(cl, ent))):break
       if tr == 0:log("viewer buffer: Channels DVR source %s is out of date, refreshing it" % d);w.post(base + "/providers/m3u/sources/%s/refresh" % up.quote(mm.group(1)), timeout=30)
       time.sleep(1)
      else:say("drift" + d, "Channels DVR source %s still does not match the playlist after a refresh" % d);continue
@@ -1371,7 +1371,7 @@ def tix(d):
  return out
 def tpos(ix, x, dur):
  if x >= ix[-1][0] if ix else True:return dur if not ix or x >= ix[-1][0] + 188 else min(ix[-1][1], dur)
- (lo, hi) = (0, len(ix) - 1)
+ lo, hi = (0, len(ix) - 1)
  while lo < hi:
   md = (lo + hi + 1) // 2
   if ix[md][0] <= x:lo = md
@@ -1424,7 +1424,7 @@ while not gone():
  try:
   r = s.get(media or cur, timeout=(5, 10));r.raise_for_status();L = [x.strip() for x in r.text.splitlines() if x.strip()]
   if not L or not L[0].startswith("#EXTM3U"):raise ValueError("response is not an m3u8 playlist")
-  v = [(int(m.group(1)) if (m := bw.search(x)) else 0, L[i + 1]) for (i, x) in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
+  v = [(int(m.group(1)) if (m := bw.search(x)) else 0, L[i + 1]) for i, x in enumerate(L[:-1]) if x.startswith("#EXT-X-STREAM-INF")]
   if v:media = up.urljoin(r.url, max(v)[1]);continue
   if "#EXT-X-ENDLIST" in L:ph += 1;handoff("provider is serving an offline placeholder");z = 5 if stalled else 0;rb = mono() + z;time.sleep(z);continue
   media = r.url;seq = 0;hasseq = False;tgt = 10;segs = [];key = None;mp = None;br = None;pe = {};dur = 0.0
@@ -1439,19 +1439,19 @@ while not gone():
     except ValueError:dur = 0.0
    elif not x.startswith("#"):
     u = up.urljoin(r.url, x);pth = up.urlsplit(u).path;b = None
-    if br:(ln, _, of) = br.partition("@");ln = int(ln);of = int(of) if of else pe.get(pth, 0);pe[pth] = of + ln;b = (ln, of)
+    if br:ln, _, of = br.partition("@");ln = int(ln);of = int(of) if of else pe.get(pth, 0);pe[pth] = of + ln;b = (ln, of)
     segs.append(dict(n=seq, s=seq, u=u, p=pth + ("@%d" % b[1] if b else ""), k=key, m=mp, b=b, d=dur));seq += 1;br = None;dur = 0.0
   if not segs:raise ValueError("empty playlist")
   if not hasseq:
    for q in segs:
     if q["p"] not in ids:ids[q["p"]] = nid;nid += 1
     q["n"] = ids[q["p"]]
-   if len(ids) > 300:ids = {k: v for (k, v) in ids.items() if v > nid - 100}
+   if len(ids) > 300:ids = {k: v for k, v in ids.items() if v > nid - 100}
    if rseen:last = max([q["n"] for q in segs if q["p"] in rseen], default=None)
   rseen = None;err = 0;e0 = None;dead = 0;w = min(max(tgt / 2, 1), 5)
   if last is None:new = join(segs) if gap is None else segs[-max(1, min(len(segs), int(-(-gap // max(tgt, 1))))):];lag = None
   elif segs[-1]["n"] < last:
-   if not {q["p"].rsplit("/", 1)[-1] for q in segs} & {x.rsplit("/", 1)[-1] for x in seen} or last - segs[-1]["n"] > 50 or (lag is not None and mono() - lag > 4 * tgt):log("provider restarted the channel, rejoining at the live edge");bad.clear();k_ = [i for (i, q) in enumerate(segs) if q["p"] in seen];new = segs[k_[-1] + 1:] if k_ else segs[-max(2, min(len(segs), int(-(-(mono() - got) // max(tgt, 1))))):];lag = None;pend = True;last = last if new else segs[-1]["n"]
+   if not {q["p"].rsplit("/", 1)[-1] for q in segs} & {x.rsplit("/", 1)[-1] for x in seen} or last - segs[-1]["n"] > 50 or (lag is not None and mono() - lag > 4 * tgt):log("provider restarted the channel, rejoining at the live edge");bad.clear();k_ = [i for i, q in enumerate(segs) if q["p"] in seen];new = segs[k_[-1] + 1:] if k_ else segs[-max(2, min(len(segs), int(-(-(mono() - got) // max(tgt, 1))))):];lag = None;pend = True;last = last if new else segs[-1]["n"]
    else:
     if lag is None:lag = mono();log("edge server is behind, waiting for it to catch up")
     new = [];media = None;w = 1
@@ -1662,12 +1662,12 @@ This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloo
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
-TRANSCODE = "off";TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};(TC_HEIGHT, TC_FPS, TC_VBITRATE) = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 8.0;import os, sys, time, json, signal, select, shutil, hashlib, threading, collections, subprocess as sp, re, urllib.parse as up
+TRANSCODE = "off";TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 8.0;import os, sys, time, json, signal, select, shutil, hashlib, threading, collections, subprocess as sp, re, urllib.parse as up
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found", file=sys.stderr);sys.exit(1)
-(src, ua) = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/");FF = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg";s = requests.Session();s.headers["User-Agent"] = ua;mono = time.monotonic;BUSY = (429, 503, 509);run = 1;WR = 95443.717688888;CL = 3.0;JB = 5.0;xb = 0.0;vpk = 1;vlj = 0.0;xo = 0.0;dmx = 0.0;STALL = 8.0;FAILT = 60.0;QUIET = 4.0;SIL = 6.0;RLOW = 4.0;RES = 20.0;QMAX = 60.0;le = {};pd = 0.04;fq = collections.deque();fql = threading.Lock();shut = {};wb = time.monotonic();rb = wb;skf = False;rstk = False;sl0 = 0.0;sl1 = 0.0;PM = 45.0;avok = None;RAMP = 0.02;RXL = 1.5;RXR = 0.15;nrx = [0];hc = {"r": 0, "x": 0, "f": 0, "k": 0.0}
+src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/");FF = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg";s = requests.Session();s.headers["User-Agent"] = ua;mono = time.monotonic;BUSY = (429, 503, 509);run = 1;WR = 95443.717688888;CL = 3.0;JB = 5.0;xb = 0.0;vpk = 1;vlj = 0.0;xo = 0.0;dmx = 0.0;STALL = 8.0;FAILT = 60.0;QUIET = 4.0;SIL = 6.0;RLOW = 4.0;RES = 20.0;QMAX = 60.0;le = {};pd = 0.04;fq = collections.deque();fql = threading.Lock();shut = {};wb = time.monotonic();rb = wb;skf = False;rstk = False;sl0 = 0.0;sl1 = 0.0;PM = 45.0;avok = None;RAMP = 0.02;RXL = 1.5;RXR = 0.15;nrx = [0];hc = {"r": 0, "x": 0, "f": 0, "k": 0.0}
 def log(m):
- for (a, b) in (("stream error", "r"), ("restarting remuxer", "x"), ("switching to stream", "f")):
+ for a, b in (("stream error", "r"), ("restarting remuxer", "x"), ("switching to stream", "f")):
   if m.startswith(a) or "; " + a in m:hc[b] += 1
  try:sys.stderr.write("[tsloop stream] %s\n" % m);sys.stderr.flush()
  except Exception:pass
@@ -1705,7 +1705,7 @@ def zsend(port, msg):
  try:
   c.sendall(bytes([255]) + bytes(8) + bytes([127, 3, 0]) + b"NULL" + bytes(16) + bytes(32));rx(64);send(4, bytes([5]) + b"READY" + bytes([11]) + b"Socket-Type" + struct.pack(">I", 3) + b"REQ");frame();send(1, b"");send(0, msg.encode());r = b""
   while True:
-   (f, b) = frame()
+   f, b = frame()
    if b:r = b
    if not f & 1:break
   return r.decode(errors="ignore")
@@ -1752,7 +1752,7 @@ def rstep(m, now, qs, lo, hi):
  want = spd(m) if RFS["on"] else 1.0
  if abs(want - TK) >= 0.0025:TK = round(TK + max(-0.005, min(0.005, want - TK)), 4);zset(TK)
 def frs(f):
- for (a, b) in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
+ for a, b in ((59.94, "60000/1001"), (29.97, "30000/1001"), (23.976, "24000/1001"), (47.952, "48000/1001")):
   if abs(f - a) < 0.01:return b
  return "%g" % f
 def ffcmd():
@@ -1781,7 +1781,7 @@ def pump():
  while True:
   with fql:p = fq[0] if fq else None;more = len(fq) > 1
   if p is None:time.sleep(0.05);continue
-  (r, _, _) = select.select([p.stdout], [], [], 0.5)
+  r, _, _ = select.select([p.stdout], [], [], 0.5)
   if skf and mono() - rb < 25:skf = False
   if not r and mono() - lw > 3 and (not ob % 188) and (mono() - wb < 10) and (mono() - rb < 25):
    if kas is None:kas = lw;hc["ks"] = kas;log("output: no video to send for 3s, sending keepalive packets so the stream stays open")
@@ -1809,7 +1809,7 @@ def pump():
    if kas is not None:hc["k"] += lw - kas;hc["ks"] = None;log("output: video flowing again after %.1fs without video" % (lw - kas));kas = None
   except OSError:bye()
 def gone():
- try:pl = select.poll();pl.register(1, select.POLLOUT);return any((e & (select.POLLERR | select.POLLHUP) for (_, e) in pl.poll(0)))
+ try:pl = select.poll();pl.register(1, select.POLLOUT);return any((e & (select.POLLERR | select.POLLHUP) for _, e in pl.poll(0)))
  except Exception:return False
 def put(b):
  try:ff.stdin.write(b);ff.stdin.flush()
@@ -1841,13 +1841,13 @@ def iskey(p):
 st = "/tmp/tsloop-" + hashlib.md5(("ch" + chid if chid.isdigit() else src).encode()).hexdigest() + ".json";last = {};dl = {};rcur = None;wlead = 0.0;prim = None;sl = threading.Lock();resumed = False;rg = 0.0
 try:
  j = json.load(open(st))
- if time.time() - j["t"] < 4 and j.get("src") == src:dl = {int(k): v for (k, v) in j["dl"].items()};last = dict(dl);off = j.get("off", 0.0);rcur = j.get("cur");prim = j.get("prim");xb = float(j.get("xb", 0.0));vpk = max(1, int(j.get("pk", 1)));rstk = bool(j.get("stk"));vlj = mono() if xb > JB else 0.0;wlead = max(j.get("lead", 0.0) - (time.time() - j["t"]), 0.0);resumed = True;rg = min(max(j.get("gage", 0.0), 0.0), FAILT);log("resuming after Dispatcharr restart")
+ if time.time() - j["t"] < 4 and j.get("src") == src:dl = {int(k): v for k, v in j["dl"].items()};last = dict(dl);off = j.get("off", 0.0);rcur = j.get("cur");prim = j.get("prim");xb = float(j.get("xb", 0.0));vpk = max(1, int(j.get("pk", 1)));rstk = bool(j.get("stk"));vlj = mono() if xb > JB else 0.0;wlead = max(j.get("lead", 0.0) - (time.time() - j["t"]), 0.0);resumed = True;rg = min(max(j.get("gage", 0.0), 0.0), FAILT);log("resuming after Dispatcharr restart")
 except Exception:pass
 cur = rcur or src
 def save():
  try:
   with sl:
-   with open(st + ".tmp", "w") as f:json.dump({"dl": {str(k): v for (k, v) in dl.items()}, "gage": mono() - got, "off": off, "cur": wcur, "src": src, "prim": prim, "lead": wlead, "xb": xb, "pk": vpk, "res": round(Qs[0], 2), "stk": skf, "to": tout, "t": time.time()}, f)
+   with open(st + ".tmp", "w") as f:json.dump({"dl": {str(k): v for k, v in dl.items()}, "gage": mono() - got, "off": off, "cur": wcur, "src": src, "prim": prim, "lead": wlead, "xb": xb, "pk": vpk, "res": round(Qs[0], 2), "stk": skf, "to": tout, "t": time.time()}, f)
    os.replace(st + ".tmp", st)
  except Exception:pass
 wcur = cur
@@ -1864,7 +1864,7 @@ def feeds(quiet=False):
  if not chid.isdigit():return [src]
  try:
   import psycopg;e = os.environ.get
-  with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:urls = [u for (u,) in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
+  with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:urls = [u for u, in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
  except Exception as x:
   if not quiet:log("could not read backup streams (%s)" % x)
   return [src]
@@ -1939,10 +1939,10 @@ def watch():
    with ql:rv = min(Qs[0] + max(wlead, 0.0), rtgt() + 15.0)
    ad = min(int(rv + PM), 180);now_ = time.time()
    if og is None:
-    try:og = json.load(open(JF));og = {a: b for (a, b) in og.items() if isinstance(b, list) and len(b) == 2}
+    try:og = json.load(open(JF));og = {a: b for a, b in og.items() if isinstance(b, list) and len(b) == 2}
     except Exception:og = {}
    def wog():
-    nonlocal og;og = {a: b for (a, b) in og.items() if time.time() - b[1] < 86400};tf = JF + ".%d.tmp" % os.getpid()
+    nonlocal og;og = {a: b for a, b in og.items() if time.time() - b[1] < 86400};tf = JF + ".%d.tmp" % os.getpid()
     with open(tf, "w") as f:json.dump(og, f)
     os.replace(tf, JF)
    for jb in jw.get(base + "/dvr/jobs", timeout=5).json() or []:
@@ -1975,15 +1975,15 @@ def watch():
      time.sleep(5);continue
    if mono() - tmap > 300:
     tmap = mono();num = dev = None;st = w.get(base + "/settings", timeout=5).json()
-    for (k, v) in st.items():
+    for k, v in st.items():
      mm = re.fullmatch("m3u\\.src\\.(.+)\\.url", k)
      if not mm or "/output/m3u" not in str(v):continue
-     t = w.get(v, timeout=20).text.splitlines();ent = [(nm(t[i]), t[i + 1].strip()) for i in range(len(t) - 1) if t[i].startswith("#EXTINF")];hit = [i for (i, (n, x)) in enumerate(ent) if uid in x]
+     t = w.get(v, timeout=20).text.splitlines();ent = [(nm(t[i]), t[i + 1].strip()) for i in range(len(t) - 1) if t[i].startswith("#EXTINF")];hit = [i for i, (n, x) in enumerate(ent) if uid in x]
      if not hit:continue
      d = "M3U-" + mm.group(1)
      for tr in range(6):
       cl = w.get(base + "/devices/%s/channels" % d, timeout=10).json()
-      if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for (c, (n, x)) in zip(cl, ent))):break
+      if len(cl) == len(ent) and all((str(c.get("GuideName", "")).strip() == n for c, (n, x) in zip(cl, ent))):break
       if tr == 0 and "post" + d not in said:said.add("post" + d);log("viewer buffer: Channels DVR source %s is out of date, refreshing it" % d);w.post(base + "/providers/m3u/sources/%s/refresh" % up.quote(mm.group(1)), timeout=30)
       time.sleep(1)
      else:say("drift" + d, "Channels DVR source %s still does not match the playlist after a refresh" % d);continue
@@ -2029,7 +2029,7 @@ def writer():
    if now - dt >= 1:
     dt = now;dh.append((now, qs + max(lead, 0.0)))
     while dh[0][0] < now - 120:dh.popleft()
-    dmx = max((v for (_, v) in dh))
+    dmx = max((v for _, v in dh))
    if it is None:
     if not remp and hc.get("s") and (lead <= 0.2) and (dmx >= RLOW + 3):remp = True;log("reserve empty: nothing queued and the client lead is used up, playback will pause until video arrives")
     time.sleep(0.05);continue
@@ -2038,8 +2038,8 @@ def writer():
     with ql:Q.popleft();nrx[0] -= 1
     off = it[3];remux(it[1]);continue
    d = it[1];ix = it[5];i = it[6]
-   if i < len(ix):(en, ca, sn) = ix[i]
-   else:(en, ca, sn) = (len(d), it[2], it[3])
+   if i < len(ix):en, ca, sn = ix[i]
+   else:en, ca, sn = (len(d), it[2], it[3])
    cd = max(ca - it[8], 0.0);rx = nrx[0] > 0 and qs > 4.0;ce = min(max(min(CL + xb + (RXL if rx else 0.0), clcap(), max(ce, lead + qs - STALL - RLOW)), ce - 0.01 * (now - tc)), ce + (RXR if rx else RAMP) * (now - tc) + max(xb - pxb, 0.0));tc = now;pxb = xb
    if cd > 0 and lead >= ce and (qs <= QMAX + 30):time.sleep(0.02);continue
    if TRANSCODE and it[6] == 0 and (mono() - fst > 90):
@@ -2069,7 +2069,7 @@ def conn(r):
    elif pid in cc:p[3] = p[3] & 240 | cc[pid]
    return p
   def commit(h):
-   global qend, prim, pd;nonlocal adv, jump;(pid, sid, ts, buf) = h
+   global qend, prim, pd;nonlocal adv, jump;pid, sid, ts, buf = h
    if prim is None and 224 <= sid <= 239:prim = pid
    if pid == prim:
     if pid in last:
@@ -2087,7 +2087,7 @@ def conn(r):
    for i in range(0, len(buf), 188):out.extend(fix(bytearray(buf[i:i + 188])))
    if pid == prim:ix.append((len(out), adv, dict(last)))
    return True
-  for (n_, p) in enumerate(pk):
+  for n_, p in enumerate(pk):
    pid = (p[1] & 31) << 8 | p[2]
    if pid == 8191:continue
    if not p[3] & 16:
@@ -2103,7 +2103,7 @@ def conn(r):
     if h and commit(h) and (pid != prim):le[pid] = x[1]
     if jump is not None and -1 < dif(x[1], last[pid]) < 5:jump = None
     if jump is not None:rest = ([bytearray(h[3][i:i + 188]) for i in range(0, len(h[3]), 188)] if h else []) + pk[n_:];break
-    (sid, ts) = x
+    sid, ts = x
     if pid in sync:
      d = dif(ts, last.get(pid, ts - 1))
      if d <= 0.001:
@@ -2168,7 +2168,7 @@ def conn(r):
    if dec is None:
     if mono() - t0 > STALL + 2:raise ValueError("no decodable video timestamps")
     continue
-   (dp, ts) = dec;va = [x for x in (pests(p) for p in pre) if x];fv_ = next((x[1] for x in va if 224 <= x[0] <= 239), None);fa_ = next((x[1] for x in va if 192 <= x[0] <= 223), None)
+   dp, ts = dec;va = [x for x in (pests(p) for p in pre) if x];fv_ = next((x[1] for x in va if 224 <= x[0] <= 239), None);fa_ = next((x[1] for x in va if 192 <= x[0] <= 223), None)
    if fv_ is not None and fa_ is not None and (3 < abs(dif(fv_, fa_)) < WR - 60) and (not (stalled and mono() - lv > 30)) and (avok != cur):raise ValueError("audio and video are %.0fs apart in this feed" % abs(dif(fv_, fa_)))
    if fv_ is not None and fa_ is not None and (3 < abs(dif(fv_, fa_)) < WR - 60):avok = cur
    elif fv_ is not None and fa_ is not None:avok = None
@@ -2193,17 +2193,17 @@ def conn(r):
     if resumed:log("resuming after Dispatcharr restart, %.1fs of video already sent" % -min(dif(ts, ref), 0))
     elif dif(ts, ref) < 0:log("reconnected, dropping %.1fs already sent (reserve %.1fs)" % (-dif(ts, ref), Qs[0]))
    else:
-    ks = [i for (i, p) in enumerate(pre) if (p[1] & 31) << 8 | p[2] == prim and pests(p) and (iskey(p) or not pv)];ki = ks[0] if ks else None
+    ks = [i for i, p in enumerate(pre) if (p[1] & 31) << 8 | p[2] == prim and pests(p) and (iskey(p) or not pv)];ki = ks[0] if ks else None
     if ki is None:
      if not fin and len(pre) < 30000 and (mono() - t0 < STALL + 2):continue
      ki = 0
     tt = None
     if nowait and hw is not None:tt = hw - max(min(RES - Qs[0] - max(wlead, 0.0), 10.0), 3.0)
     elif pend and gap is not None and (hw is not None):tt = hw - gap - (mono() - got) - 0.5
-    if tt is not None and len(ks) > 1:ki = next((i for i in reversed(ks) if dif(pests(pre[i])[1], tt) <= 0), ks[0]) if pend else next((i for i in ks if dif(pests(pre[i])[1], tt) >= 0), ks[-1]);pp = {(p[1] & 31) << 8 | p[2] for p in pre if pests(p)};pre = [p for p in pre[:ki] if (p[1] & 31) << 8 | p[2] not in pp] + pre[ki:];ki = next((i for (i, p) in enumerate(pre) if (p[1] & 31) << 8 | p[2] == prim and pests(p)))
+    if tt is not None and len(ks) > 1:ki = next((i for i in reversed(ks) if dif(pests(pre[i])[1], tt) <= 0), ks[0]) if pend else next((i for i in ks if dif(pests(pre[i])[1], tt) >= 0), ks[-1]);pp = {(p[1] & 31) << 8 | p[2] for p in pre if pests(p)};pre = [p for p in pre[:ki] if (p[1] & 31) << 8 | p[2] not in pp] + pre[ki:];ki = next((i for i, p in enumerate(pre) if (p[1] & 31) << 8 | p[2] == prim and pests(p)))
     ts = pests(pre[ki])[1];gate = ts;kt = mono();mode = "splice"
     if pv:kwait.add(prim)
-    if qend is not None:om = moff;moff = qend + max(0.1, pd + 0.02) - ts;why = "joining the backup stream (offset %.3fs, %.1fs behind its live edge)" % (qend + max(0.1, pd + 0.02) - ts, dif(hw, ts) if hw is not None else -1) if pend else "replaying %.0fs to keep playback going, keeping timestamps continuous" % -dif(ts, ref) if nowait and ref is not None else "provider skipped %.0fs, keeping timestamps continuous" % dif(ts, ref) if ref is not None and 0 < dif(ts, ref) < 600 else "stream timeline changed, keeping timestamps continuous";enq(["remux", why, 0, moff]);sh = om - moff;le = {k: v + sh for (k, v) in le.items() if k != prim};last = {}
+    if qend is not None:om = moff;moff = qend + max(0.1, pd + 0.02) - ts;why = "joining the backup stream (offset %.3fs, %.1fs behind its live edge)" % (qend + max(0.1, pd + 0.02) - ts, dif(hw, ts) if hw is not None else -1) if pend else "replaying %.0fs to keep playback going, keeping timestamps continuous" % -dif(ts, ref) if nowait and ref is not None else "provider skipped %.0fs, keeping timestamps continuous" % dif(ts, ref) if ref is not None and 0 < dif(ts, ref) < 600 else "stream timeline changed, keeping timestamps continuous";enq(["remux", why, 0, moff]);sh = om - moff;le = {k: v + sh for k, v in le.items() if k != prim};last = {}
     else:last = {};le = {}
    pend = False;resumed = False;pk = pre;pre = []
   emit(pk)
@@ -2229,7 +2229,7 @@ def conn(r):
    if len(lb) > 7:lb.pop(min(lb))
    cu = Qs[0] + max(wlead - CL, 0.0)
    if cu < RES / 2 and nm - c0 > 180 and (nm - lrf > 300 or cu < RLOW + 2) and (not stalled) and (len(lb) >= 6):
-    dg = min((v for (k_, v) in lb.items() if k_ >= bk - 5)) - lmin
+    dg = min((v for k_, v in lb.items() if k_ >= bk - 5)) - lmin
     if dg > 4:lrf = nm;raise ValueError("provider fell %.0fs behind live on this connection and the reserve is down to %.1fs; reconnecting for a fresh burst" % (dg, cu))
   if media > 0:
    mh.append((mono(), media, ta))
@@ -2261,7 +2261,7 @@ while not gone():
   if r.url.rsplit("/", 1)[-1].lower().startswith("black."):r.close();ph += 1;handoff("provider is serving an offline placeholder");dl_ = 5 if stalled else 0;rb = mono() + dl_;time.sleep(dl_);continue
   if err > 0:hc["e"] = hc.get("e", 0) + err
   err = 0;e0 = None;sticky = r.url if url == cur and r.url != cur else None
-  try:(dur, media) = conn(r)
+  try:dur, media = conn(r)
   finally:r.close()
   if gone():break
   if media < 15 and dur < 60:short += 1
