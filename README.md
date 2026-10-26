@@ -589,8 +589,10 @@ services:
 
 **Intel or AMD, Unraid template:** add `--device=/dev/dri` to **Extra Parameters**.
 
-**NVIDIA, Docker Compose** (needs the NVIDIA Container Toolkit, or the Nvidia Driver plugin on
-Unraid):
+**NVIDIA** needs the NVIDIA driver on the host plus the NVIDIA Container Toolkit (on Unraid, the
+**Nvidia Driver** plugin provides both).
+
+**NVIDIA, Docker Compose:**
 ```yaml
 services:
   dispatcharr:
@@ -599,6 +601,15 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
 ```
+(Newer Compose versions also accept `deploy: resources: reservations: devices:` with
+`driver: nvidia` and `capabilities: [gpu]` instead of `runtime: nvidia`.)
+
+**NVIDIA, `docker run`:** add `--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`
+(or `--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all`).
+
+**NVIDIA, Unraid template:** add `--runtime=nvidia` to **Extra Parameters**, then add two
+variables: `NVIDIA_VISIBLE_DEVICES` set to `all` (or the GPU UUID shown on the Nvidia Driver
+plugin page) and `NVIDIA_DRIVER_CAPABILITIES` set to `all`.
 
 Recreate the container after the change. To check it, tune a channel and look for
 `transcoding with Intel/AMD graphics (VAAPI)` or `transcoding with NVIDIA graphics (NVENC)` in
