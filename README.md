@@ -578,6 +578,7 @@ TRANSCODE=False
 TC_HEIGHT=1080
 TC_FPS=59.94
 TC_VBITRATE="8M"
+TC_LEAD=8.0
 ```
 
 **`TRANSCODE=False` (default)** copies every stream untouched, with no extra CPU.
@@ -616,7 +617,9 @@ image includes all three encoders, but the container needs the device:
 
 **What it costs:** GPU time (on an Intel iGPU the ffmpeg process still uses roughly a third of one
 CPU core per stream for decoding and scaling), a little picture quality, and about a second more
-delay. Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
+delay. While transcoding, the player is kept `TC_LEAD` (8) seconds ahead instead of 4, because the
+encoder can pause for a few seconds when the GPU is busy (for example when another container
+shares the same Intel GPU). Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
 speed at most once every 2 minutes.
 
 Log lines: `transcoding with Intel/AMD graphics (VAAPI)` (or NVENC / the CPU) when a stream
@@ -848,11 +851,14 @@ retune. You can delete the profile afterwards.
 #   rebuilds itself by playing slightly slower (3%, pitch unchanged) until
 #   it is full again. The reserve target grows on channels that stall a lot.
 #   What it costs: GPU or CPU time, a little picture quality, ~1 s more delay.
+#   TC_LEAD keeps the player this many seconds ahead while transcoding, so a
+#   short encoder pause (a few seconds when the GPU is busy) never reaches the TV.
 # ======================================================================
 TRANSCODE=False
 TC_HEIGHT=1080
 TC_FPS=59.94
 TC_VBITRATE="8M"
+TC_LEAD=8.0
 import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found",file=sys.stderr);sys.exit(1)
@@ -1275,6 +1281,7 @@ def writer():
    dp=rtgt();cb=max(CL,255868*it[2]/max(len(it[1]),1)+0.5)
    cbv=cb if cbv is None else min(cb,cbv+0.02*(now-cbt));cbt=now
    cl=min(cbv+xb,clcap())
+   if TRANSCODE:cl=max(cl,min(TC_LEAD,clcap()))
    with ql:rmx=any(x[0]=="remux" for x in list(Q)[1:5])
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
