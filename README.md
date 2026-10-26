@@ -39,6 +39,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
+  - [Picking the best stream](#picking-the-best-stream)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
   - [Recordings](#recordings-1)
   - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
@@ -53,6 +54,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [HLS profile parameters](#hls-profile-parameters)
 - [MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr)
   - [How it differs from the HLS profile](#how-it-differs-from-the-hls-profile)
+  - [Picking the best stream (MPEG-TS)](#picking-the-best-stream-mpeg-ts)
   - [Requirements](#requirements-2)
   - [Create and turn it on](#create-and-turn-it-on)
   - [Check that it's working](#check-that-its-working-1)
@@ -370,6 +372,7 @@ profile exists for providers that don't offer HLS.
 | Reconnects | Always continue the same timeline | Usually seamless (overlap is removed), but the provider can land on a different timeline (about 1 in 6 on our test provider), which shows as a small skip or repeat |
 | Extra head start per extra device | 5 s each, up to about 40 s in total | 5 s each, capped at about 8-14 s so failover keeps its headroom |
 | Backup failover (last resort), keepalive, stuck-feed recovery | Yes | Yes |
+| Picks the best stream at tune time, keeps the frame rate on failover | Yes (checks read the playlist) | Yes (checks open the stream briefly) |
 | CPU per stream | Very low (works on whole segments) | Low, about 1-3 % of one core (handles every 188-byte packet in Python) |
 | Delay behind live | about 60 s | about 20 s |
 | Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
@@ -519,27 +522,8 @@ encoder does:
   Channels DVR last refreshed it), the profile refreshes that source in Channels DVR, the same
   as the **Refresh** button, and checks again. Playback never waits for this. Every Dispatcharr
   playlist you've added to Channels DVR is handled the same way.
-- **Picks the best stream when you tune.** The first stream in a channel's list isn't necessarily
-  the best one; it's whatever was put first. On a fresh tune the profile checks every stream on the
-  channel at the same moment, reads each one's resolution and frame rate from the start of its
-  video (a few kilobytes, no decoding), and plays the best one that answered: highest resolution,
-  then highest frame rate, then your stream order. It waits at most 1.5 seconds; a stream that
-  hasn't answered by then counts as "unknown", and one that errors or serves the offline
-  placeholder counts as "not working". The order it settles on is also the order it uses for
-  failover, so a dead stream is never the first one it falls back to. Each stream is opened once,
-  briefly, and closed again, the same as changing channels. If the provider answers any check with
-  a connection-limit error (509), it stops checking for that tune and uses your stream order. A
-  channel with no backup streams isn't checked at all. Dispatcharr's restart of a running stream
-  skips the check and resumes where it was.
-- **Keeps the frame rate the stream started with.** Players set themselves up for the frame rate a
-  stream starts at. A switch to a backup at a different frame rate (for example 29.97 to 59.94)
-  makes some players, such as Channels DVR on Apple TV, drop frames and drift audio until you tune
-  again. So at failover the profile tries working streams with the same frame rate first, then
-  streams of unknown rate, then other frame rates, and streams that weren't working last. If it
-  has to use a different frame rate, it keeps checking the matching streams every 30 seconds and
-  moves back to one once it has stayed healthy for a minute (never sooner than 2 minutes after
-  the last switch). Moving back is a switch like any other, so it jumps forward or back in the
-  show.
+- **Picks the best stream and keeps its frame rate.** See
+  [Picking the best stream](#picking-the-best-stream).
 - **Switches to a backup only as a last resort.** Every feed of a channel is at a different point
   in the program (two encodes of the same channel can be minutes apart, and providers don't send
   the clock time needed to line them up), so a switch always means jumping forward or back in the
@@ -558,7 +542,7 @@ encoder does:
     placeholder). A feed that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so
     a channel whose feeds are all down waits instead of hopping between dead feeds. Once on a
     backup it stays there as long as it works, unless it moved to a different frame rate (see
-    above).
+    [Picking the best stream](#picking-the-best-stream)).
   - **At the switch** the backup is joined as deep as the outage lasted (deep enough to rebuild
     the reserve after a long one), timestamps continue where the old feed stopped, and the new
     remuxer starts before the old one finishes, so the output doesn't pause. A backup on a
@@ -587,6 +571,48 @@ encoder does:
 
 You watch about 60 seconds behind live on providers with 10-second segments (less on providers
 whose playlists are short).
+
+### Picking the best stream
+
+The first stream in a channel's list isn't necessarily the best one; it's whatever was put first.
+So on a fresh tune of a channel that has backups, the profile picks for itself:
+
+1. **Checks every stream at once.** Each stream on the channel is opened briefly at the same moment
+   (the playlist, then the start of one segment) and closed again, like changing channels. The
+   profile reads the resolution and frame rate from the first few kilobytes of video, with no
+   decoding. It waits at most 1.5 seconds.
+2. **Sorts them into groups:**
+   - **Working:** answered with video. Ranked by highest resolution, then highest frame rate,
+     then your stream order.
+   - **Unknown:** hadn't answered within 1.5 seconds. Providers are sometimes slow to answer a
+     healthy stream, so these are still used.
+   - **Not working:** an error, an empty playlist or the offline placeholder.
+3. **Plays the top working stream.** The same order is used for failover, so a dead stream is
+   never the first one it falls back to.
+
+**Skipped when it isn't needed:** a channel with no backup streams isn't checked at all, so it
+tunes as fast as before. When Dispatcharr restarts a stream that's already playing, the check is
+skipped and the stream resumes where it was. If the provider answers any check with a
+connection-limit error (509), the profile stops checking for that tune and uses your stream order.
+
+**Keeping the frame rate.** Players set themselves up for the frame rate a stream starts at. A
+switch to a backup at a different frame rate (for example 29.97 to 59.94) makes some players, such
+as Channels DVR on Apple TV, drop frames and drift audio until you tune again. So at failover the
+order is:
+
+1. Working streams with the same frame rate
+2. Streams whose frame rate is unknown
+3. Working streams with a different frame rate
+4. Streams that weren't working
+
+If it has to use a different frame rate, it checks the matching streams every 30 seconds (a
+playlist request, no video) and moves back to one once it has stayed healthy for a minute, never
+sooner than 2 minutes after the last switch. Moving back is a switch like any other, so it jumps
+forward or back in the show.
+
+Frame rates are kept in the channel's state file (see
+[Files the profiles write](#files-the-profiles-write)) and ignored after 24 hours. Frame rates
+learned while a stream plays are updated as it goes.
 
 ### Tuner sharing and the buffer, step by step
 
@@ -749,6 +775,12 @@ with `[hlsloop stream]`:
 | `playlist stale Ns, re-resolving` | The playlist stopped updating; the profile requested it again. |
 | `edge server is behind, waiting for it to catch up` | A provider server was a few segments behind; nothing was replayed. |
 | `provider restarted the channel, rejoining` | The provider restarted the channel; the profile rejoined it. |
+| `checked all N streams in Xs: stream 2 1080p 59.94 fps; stream 1 720p 29.97 fps; ...` | The tune-time check, best stream first. `no answer yet` is unknown, `not working` failed. See [Picking the best stream](#picking-the-best-stream). |
+| `playing stream N of M, the best one right now` | The check picked a stream other than the first one in your list. |
+| `no backup streams on this channel, so not ranking streams; playing it directly` | The channel has one stream, so nothing was checked. |
+| `provider refused a stream check (509), so not ranking streams this time; using the channel stream order` | The provider pushed back; the profile used your order instead. |
+| `this stream started at N fps; when switching, backups with the same frame rate come first` | The frame rate failover tries to keep. |
+| `stream N runs at N fps, not N; will move back to a matching stream once one has been stable for a minute` / `stream N of M has the frame rate this stream started with and has been stable for a minute; switching to stream N of M` | A failover had to use a different frame rate, then moved back once a matching stream was healthy. |
 | `...; switching to stream N of M` | The feed died or went to the offline placeholder; the profile moved to the next backup stream. |
 | `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
 | `...; no backup stream is answering right now, so staying on this feed` | Every backup is down too; the profile waits and checks them again. |
@@ -781,7 +813,9 @@ switches, or `fetch loop stuck`.
 - **Riding out an outage costs reserve.** The profile waits for the feed to come back as long as
   its reserve lasts (up to 60 seconds), then switches just before the picture would freeze.
 - **Feeds with a different resolution, frame rate or codec** can cause a brief flicker on the
-  client at a failover while its decoder resets. Nothing is re-encoded to hide it.
+  client at a failover while its decoder resets. Nothing is re-encoded to hide it. If the only
+  working backup has a different frame rate, some players drop frames until the profile moves back
+  to a matching stream (see [Picking the best stream](#picking-the-best-stream)).
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
   when the provider comes back, the profile recovers on its own, but video from the outage is lost.
 - **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
@@ -1539,13 +1573,31 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
   read at playback speed, with at most 60 s queued.
-- **Picking the best stream and keeping the frame rate** work as in the HLS profile. With no
-  playlist to read, each check opens the stream itself for a moment, and the frame-rate check that
-  leads back to a matching stream only runs while the reserve is at least half full.
+- **Picks the best stream and keeps its frame rate** as in the HLS profile; see
+  [Picking the best stream (MPEG-TS)](#picking-the-best-stream-mpeg-ts).
 - Everything else matches the HLS profile: backups checked before switching, failed feeds left
   alone for a while, smooth pacing through a switch, recording extensions (see
   [Recordings](#recordings)), gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
   restart, no hammering on a dead channel (retries at least 5 seconds apart), Retry-After honored.
+
+### Picking the best stream (MPEG-TS)
+
+Works the same as [in the HLS profile](#picking-the-best-stream): on a fresh tune of a channel
+with backups, every stream is checked at once for at most 1.5 seconds, ranked (working by
+resolution, then frame rate, then your order; unknown; not working), and the best one plays.
+Failover keeps the frame rate the stream started with, and moves back to a matching stream once
+one has been healthy for a minute. A channel with no backups isn't checked, a Dispatcharr restart
+skips the check, and a 509 from the provider stops it for that tune.
+
+Two differences, because raw MPEG-TS has no playlist:
+
+- **Each check opens the stream itself** for a moment, reads its first few kilobytes of video and
+  closes it.
+- **The check that leads back to a matching frame rate** also opens the stream, so it only runs
+  while the reserve is at least half full. If the provider refuses it, the profile stays on the
+  current stream and tries again 30 seconds later.
+
+The log lines are the same as the HLS profile's, with the `[tsloop stream]` prefix.
 
 ### Requirements
 
@@ -1576,6 +1628,7 @@ Messages start with `[tsloop stream]`.
 | `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
 | `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
 | `provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see above). |
+| `checked all N streams in Xs: ...` / `playing stream N of M, the best one right now` / `no backup streams on this channel, ...` | The tune-time check, as in the HLS profile. See [Picking the best stream (MPEG-TS)](#picking-the-best-stream-mpeg-ts). |
 | `...; switching to stream N of M` | Failover to the next backup. |
 | `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
 | `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
