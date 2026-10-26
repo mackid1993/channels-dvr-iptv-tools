@@ -134,6 +134,10 @@ def frs(f):
 SLOW = 1.03
 SPD = 1.0
 SPA = 1.0
+RP = [None, 0.0]
+ADJ = [0.0]
+OFS = [0.0]
+EI = {}
 RQ = collections.deque(maxlen=6000)
 lowt = None
 ltk = -1000000000.0
@@ -154,11 +158,97 @@ def rstep(now, qs, lo, hi, win):
         SPD = SLOW
         lowt = None
         ltk = now
-        remux("reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi))
+        RP[1] = now
+        RP[0] = "reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi)
     elif qm >= hi:
         SPD = 1.0
         ltk = now
-        remux("reserve back to %.0fs; back to real speed" % qm)
+        RP[1] = now
+        RP[0] = "reserve back to %.0fs; back to real speed" % qm
+
+def dif(a, b):
+    return (a - b + WR / 2) % WR - WR / 2
+
+def pests(p):
+    if not p[1] & 64:
+        return None
+    af = p[3] >> 4 & 3
+    if not af & 1:
+        return None
+    o = 5 + p[4] if af == 3 else 4
+    if o + 14 > 188 or p[o:o + 3] != b"\x00\x00\x01":
+        return None
+    sid = p[o + 3]
+    if not (192 <= sid <= 239 or sid == 189):
+        return None
+    fl = p[o + 7] & 192
+    if not fl & 128:
+        return None
+    b = p[o + 14:o + 19] if fl == 192 and o + 19 <= 188 else p[o + 9:o + 14]
+    return (sid, ((b[0] >> 1 & 7) << 30 | b[1] << 22 | b[2] >> 1 << 15 | b[3] << 7 | b[4] >> 1) / 90000.0)
+
+def iskey(p):
+    af = p[3] >> 4 & 3
+    if af == 3 and p[4] and p[5] & 64:
+        return True
+    o = 5 + p[4] if af == 3 else 4
+    b = bytes(p[o + 9 + p[o + 8]:])
+    i = b.find(b"\x00\x00\x01")
+    while 0 <= i < len(b) - 3:
+        n = b[i + 3]
+        if not n & 128 and (i + 4 < len(b) and b[i + 4] == 1 and (n >> 1 & 63 in (19, 20, 21, 32, 33)) or n & 31 in (5, 7)):
+            return True
+        i = b.find(b"\x00\x00\x01", i + 3)
+    return False
+
+def kfo(d, a, b):
+    for j in range(a, b - 187, 188):
+        p = d[j:j + 188]
+        if p[0] == 71 and p[1] & 64:
+            q = pests(p)
+            if q and 224 <= q[0] <= 239 and iskey(p):
+                return j
+    return None
+
+def avlead(d, k):
+    q = pests(d[k:k + 188])
+    vk = q[1] if q else None
+    if vk is None:
+        return 0.0
+    for j in range(k, min(len(d), k + 188 * 3000) - 187, 188):
+        p = d[j:j + 188]
+        if p[0] == 71 and p[1] & 64:
+            q = pests(p)
+            if q and (192 <= q[0] <= 223 or q[0] == 189):
+                return min(max(dif(vk, q[1]), 0.0), 1.0)
+    return 0.0
+
+def note(b):
+    e = EI.get(ff.pid) if ff else None
+    if not e or (e[3] is not None and e[4] is not None):
+        return
+    for j in range(0, len(b) - 187, 188):
+        p = b[j:j + 188]
+        if p[0] != 71 or not p[1] & 64:
+            continue
+        q = pests(p)
+        if not q:
+            continue
+        if e[2] is None or dif(q[1], e[2]) < 0:
+            e[2] = q[1]
+        if 224 <= q[0] <= 239:
+            if e[3] is None and iskey(p):
+                e[3] = q[1]
+        elif e[4] is None:
+            e[4] = q[1]
+        if e[3] is not None and e[4] is not None:
+            return
+
+def eofs(vk, av):
+    e = EI.get(ff.pid) if ff else None
+    if not e or e[2] is None or e[3] is None:
+        return None
+    return e[0] + dif(e[3], e[2]) + dif(vk, e[3]) * e[1] - av
 
 def ffcmd():
     b = [FF, "-hide_banner", "-loglevel", "error", "-fflags", "+discardcorrupt", "-probesize", "1000000", "-analyzeduration", "1000000"]
@@ -177,18 +267,24 @@ def ffcmd():
     else:
         vc = ["-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast"] + rc
     af = "aresample=async=1000" + (",atempo=%.6f" % (1 / SPA) if SPA != 1.0 else "")
-    return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % (tout + 1.4), "-f", "mpegts", "pipe:1"]
+    return b + ["-i", "pipe:0", "-map", "0:v:0?", "-map", "0:a:0?"] + vc + ["-af", af, "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-output_ts_offset", "%.3f" % OFS[0], "-f", "mpegts", "pipe:1"]
 
 def rtgt():
     return dep or 3 * tgt
 
-def remux(why=None):
+def remux(why=None, ofs=None):
     global ff, SPA
     if why:
         log("restarting remuxer: " + why)
     old = ff
     SPA = SPD
+    RP[0] = None
+    OFS[0] = ofs if ofs is not None else tout + 1.4 - ADJ[0]
+    if old:
+        EI.pop(old.pid, None)
     ff = sp.Popen(ffcmd(), stdin=sp.PIPE, stdout=sp.PIPE)
+    ADJ[0] = 0.0
+    EI[ff.pid] = [OFS[0], SPA, None, None, None]
     with fql:
         fq.append(ff)
     if old:
@@ -275,6 +371,8 @@ def gone():
         return False
 
 def put(b):
+    if TRANSCODE:
+        note(b)
     try:
         ff.stdin.write(b)
         ff.stdin.flush()
@@ -902,7 +1000,7 @@ def writer():
             if lead >= cl and (qs <= dp - cl + tgt or (TRANSCODE and lead >= cl)) and (not (TRANSCODE and qs > 2 and (mono() - OWT[0] > 0.7) and (lead < clcap()))):
                 time.sleep(0.02)
                 continue
-            if TRANSCODE and it[5] == 0 and (mono() - fst > 90):
+            if TRANSCODE and mono() - fst > 90:
                 dp_ = dep or 3 * tgt
                 rstep(now, qs, dp_ * 0.5, dp_ * 0.75, 1.5 * tgt)
             d = it[1]
@@ -912,7 +1010,29 @@ def writer():
             e = it[5] + k
             cd = (it[2] if e >= len(d) else tpos(it[6], e, it[2])) - tpos(it[6], it[5], it[2]) if it[6] else it[2] * k / max(len(d), 1)
             cd = max(cd, 0.0)
-            put(d[it[5]:it[5] + k])
+            if RP[0]:
+                k_ = kfo(d, it[5], e) if now - RP[1] < 10 else it[5]
+                if k_ is not None:
+                    if k_ > it[5]:
+                        put(d[it[5]:k_])
+                    w_ = RP[0]
+                    av_ = avlead(d, k_) if now - RP[1] < 10 else 0.0
+                    q_ = pests(d[k_:k_ + 188])
+                    o_ = eofs(q_[1], av_) if q_ and 224 <= q_[0] <= 239 else None
+                    if o_ is not None and abs(o_ - (tout + 1.4 - av_)) > 3:
+                        o_ = None
+                    if o_ is not None:
+                        cp_ = max(tpos(it[6], k_, it[2]) - tpos(it[6], it[5], it[2]) if it[6] else it[2] * (k_ - it[5]) / max(len(d), 1), 0.0)
+                        tout = o_ + av_ - 1.4 - cp_ * SPD
+                        remux(w_, o_)
+                    else:
+                        ADJ[0] = av_
+                        remux(w_)
+                    put(d[k_:e])
+                else:
+                    put(d[it[5]:e])
+            else:
+                put(d[it[5]:e])
             it[5] += k
             wpart = [it[3], it[5]]
             lead += cd * SPA
