@@ -484,8 +484,8 @@ a different frame rate can upset the player, and a drained reserve only comes ba
 > quarters (about 45 s on HLS, 16 s on MPEG-TS). Then it returns to real speed. That refills
 > about 1.8 s of reserve per minute, so a refill takes about 8 to 25 minutes on HLS and 4 to 9
 > minutes on MPEG-TS, depending on how far the reserve dropped. The rest of the
-> time video plays at its real speed. Each switch restarts the encoder, which can cause one brief
-> audio blip. This only happens with transcoding on: without it, slowing playback would mean
+> time video plays at its real speed. The speed changes while the encoder keeps running, so there
+> is no restart and no audio gap. This only happens with transcoding on: without it, slowing playback would mean
 > stretching audio that is only copied, which causes crackle or drift, so on the normal path the
 > reserve only comes back on a retune.
 
@@ -916,8 +916,8 @@ retune. You can delete the profile afterwards.
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
 # provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged) until the reserve is back to three quarters, then
-# returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# (pitch unchanged, eased in without restarting) until the reserve is
+# back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -961,6 +961,40 @@ def hwpick():
   except Exception:pass
  log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
  return HW
+ZB=20000+(os.getpid()%7000)*4;ZP=[ZB+2];zerr=[0]
+def sxp(k):return "if(isnan(PREV_OUTPTS),PTS-STARTPTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
+def zsend(port,msg):
+ import socket,struct
+ c=socket.create_connection(("127.0.0.1",port),timeout=3)
+ def rx(n):
+  b=b""
+  while len(b)<n:
+   x=c.recv(n-len(b))
+   if not x:raise OSError("closed")
+   b+=x
+  return b
+ def frame():
+  f=rx(1)[0];n=struct.unpack(">Q",rx(8))[0] if f&2 else rx(1)[0];return f,rx(n)
+ def send(f,b):c.sendall((bytes([f|2])+struct.pack(">Q",len(b)) if len(b)>255 else bytes([f,len(b)]))+b)
+ try:
+  c.sendall(bytes([255])+bytes(8)+bytes([127,3,0])+b"NULL"+bytes(16)+bytes(32));rx(64)
+  send(4,bytes([5])+b"READY"+bytes([11])+b"Socket-Type"+struct.pack(">I",3)+b"REQ");frame()
+  send(1,b"");send(0,msg.encode())
+  r=b""
+  while True:
+   f,b=frame()
+   if b:r=b
+   if not f&1:break
+  return r.decode(errors="ignore")
+ finally:c.close()
+def zset(k):
+ def go():
+  try:
+   a=zsend(ZP[0],"setpts@v expr "+sxp(k));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k))
+   if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
+  except Exception as e:
+   if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
+ threading.Thread(target=go,daemon=True).start()
 def frs(f):
  for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
   if abs(f-a)<0.01:return b
@@ -969,12 +1003,12 @@ def ffcmd():
  b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]
  if not TRANSCODE:return b+["-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"]
  h=hwpick();fr=frs(TC_FPS);g=str(int(round(2*TC_FPS)))
- vf="bwdif=mode=send_frame:deint=interlaced,setpts=(PTS-STARTPTS)*%.4f,fps=%s,scale=-2:%d:flags=fast_bilinear"%(TK,fr,TC_HEIGHT)
+ vf="zmq=b=tcp\\\\://127.0.0.1\\\\:%d,bwdif=mode=send_frame:deint=interlaced,setpts@v=expr=%s,fps=%s,scale=-2:%d:flags=fast_bilinear"%(ZP[0],chr(39)+sxp(TK)+chr(39),fr,TC_HEIGHT)
  rc=["-b:v",TC_VBITRATE,"-maxrate",TC_VBITRATE,"-bufsize",TC_VBITRATE,"-g",g]
  if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
  elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
  else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
- af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
+ af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,asetpts=PTS-STARTPTS,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
  return dep or 3*tgt
@@ -982,6 +1016,7 @@ def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
  old=ff
+ if TRANSCODE:ZP[0]=ZB+2-(ZP[0]-ZB)
  ff=sp.Popen(ffcmd(),stdin=sp.PIPE,stdout=sp.PIPE)
  with fql:fq.append(ff)
  if old:
@@ -1353,7 +1388,7 @@ def writer():
    if TRANSCODE and it[5]==0 and now-ltk>60 and mono()-fst>90:
     dp_=dep or 3*tgt;wk=1.03 if qs<dp_*0.5 else (1.0 if qs>=dp_*0.75 else TK)
     if wk!=TK:
-     TK=wk;ltk=now;remux(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,dp_,dp_*0.75)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
+     TK=wk;ltk=now;zset(wk);log(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,dp_,dp_*0.75)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
    d=it[1]
    if len(it)<7:it.append(tix(d))
    k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
@@ -1617,8 +1652,8 @@ stuck feeds and the tuner-sharing head start.
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed. One exception, transcoding only: if a
 # provider outage drains the reserve below half, playback runs 3% slower
-# (pitch unchanged) until the reserve is back to three quarters, then
-# returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
+# (pitch unchanged, eased in without restarting) until the reserve is
+# back to three quarters, then returns to real speed. Costs a few seconds more delay and some GPU time. Give the Dispatcharr container a GPU
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
@@ -1660,6 +1695,40 @@ def hwpick():
   except Exception:pass
  log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
  return HW
+ZB=20000+(os.getpid()%7000)*4;ZP=[ZB+2];zerr=[0]
+def sxp(k):return "if(isnan(PREV_OUTPTS),PTS-STARTPTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
+def zsend(port,msg):
+ import socket,struct
+ c=socket.create_connection(("127.0.0.1",port),timeout=3)
+ def rx(n):
+  b=b""
+  while len(b)<n:
+   x=c.recv(n-len(b))
+   if not x:raise OSError("closed")
+   b+=x
+  return b
+ def frame():
+  f=rx(1)[0];n=struct.unpack(">Q",rx(8))[0] if f&2 else rx(1)[0];return f,rx(n)
+ def send(f,b):c.sendall((bytes([f|2])+struct.pack(">Q",len(b)) if len(b)>255 else bytes([f,len(b)]))+b)
+ try:
+  c.sendall(bytes([255])+bytes(8)+bytes([127,3,0])+b"NULL"+bytes(16)+bytes(32));rx(64)
+  send(4,bytes([5])+b"READY"+bytes([11])+b"Socket-Type"+struct.pack(">I",3)+b"REQ");frame()
+  send(1,b"");send(0,msg.encode())
+  r=b""
+  while True:
+   f,b=frame()
+   if b:r=b
+   if not f&1:break
+  return r.decode(errors="ignore")
+ finally:c.close()
+def zset(k):
+ def go():
+  try:
+   a=zsend(ZP[0],"setpts@v expr "+sxp(k));b=zsend(ZP[0]+1,"atempo@a tempo %.4f"%(1/k))
+   if not (a.startswith("0") and b.startswith("0")):raise OSError(a+" / "+b)
+  except Exception as e:
+   if not zerr[0]:zerr[0]=1;log("could not change playback speed (%s)"%e)
+ threading.Thread(target=go,daemon=True).start()
 def frs(f):
  for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
   if abs(f-a)<0.01:return b
@@ -1668,12 +1737,12 @@ def ffcmd():
  b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]+(["-probesize","5000000","-analyzeduration","3000000"] if TRANSCODE else [])
  if not TRANSCODE:return b+["-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"]
  h=hwpick();fr=frs(TC_FPS);g=str(int(round(2*TC_FPS)))
- vf="bwdif=mode=send_frame:deint=interlaced,setpts=(PTS-STARTPTS)*%.4f,fps=%s,scale=-2:%d:flags=fast_bilinear"%(TK,fr,TC_HEIGHT)
+ vf="zmq=b=tcp\\\\://127.0.0.1\\\\:%d,bwdif=mode=send_frame:deint=interlaced,setpts@v=expr=%s,fps=%s,scale=-2:%d:flags=fast_bilinear"%(ZP[0],chr(39)+sxp(TK)+chr(39),fr,TC_HEIGHT)
  rc=["-b:v",TC_VBITRATE,"-maxrate",TC_VBITRATE,"-bufsize",TC_VBITRATE,"-g",g]
  if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
  elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
  else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
- af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
+ af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,asetpts=PTS-STARTPTS,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
  return RES
@@ -1681,6 +1750,7 @@ def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
  old=ff
+ if TRANSCODE:ZP[0]=ZB+2-(ZP[0]-ZB)
  ff=sp.Popen(ffcmd(),stdin=sp.PIPE,stdout=sp.PIPE)
  with fql:fq.append(ff)
  if old:
@@ -1986,7 +2056,7 @@ def writer():
    if TRANSCODE and it[6]==0 and now-ltk>60 and mono()-fst>90:
     wk=1.03 if qs<RES*0.5 else (1.0 if qs>=RES*0.8 else TK)
     if wk!=TK:
-     TK=wk;ltk=now;remux(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,RES,RES*0.8)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
+     TK=wk;ltk=now;zset(wk);log(("reserve down to %.0fs of %.0fs; playing 3 percent slower until it is back to %.0fs"%(qs,RES,RES*0.8)) if wk>1 else ("reserve back to %.0fs; real speed again"%qs))
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
