@@ -39,6 +39,7 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
+  - [Transcoding (optional)](#transcoding-optional)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
   - [Recordings](#recordings-1)
   - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
@@ -371,6 +372,7 @@ profile exists for providers that don't offer HLS.
 | Extra head start per extra device | 5 s each, up to about 40 s in total | 5 s each, capped at about 8-14 s so failover keeps its headroom |
 | Backup failover (last resort), keepalive, stuck-feed recovery | Yes | Yes |
 | CPU per stream | Very low (works on whole segments) | Low, about 1-3 % of one core (handles every 188-byte packet in Python) |
+| Optional transcoding (`TRANSCODE=True`) | Yes; reserve target up to 150 s | Yes; reserve target up to 50 s |
 | Delay behind live | about 60 s | about 20 s |
 | Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
 | Log prefix | `[hlsloop stream]` | `[tsloop stream]` |
@@ -560,11 +562,66 @@ encoder does:
 - **Tells a lagging server from a channel restart**, and **backs off politely** on
   connection-limit responses (503, 509, 429, honoring `Retry-After` up to 30 seconds).
 - **Recordings keep their ending.** See [Recordings](#recordings-1).
-- **No re-encoding.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
+- **Optional transcoding.** Off by default. See [Transcoding (optional)](#transcoding-optional).
+- **No re-encoding by default.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
   unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are supported.
 
 You watch about 60 seconds behind live on providers with 10-second segments (less on providers
 whose playlists are short).
+
+### Transcoding (optional)
+
+At the very top of the profile code there is a switch:
+
+```
+TRANSCODE=False
+TC_HEIGHT=1080
+TC_FPS=59.94
+TC_VBITRATE="8M"
+```
+
+**`TRANSCODE=False` (default)** copies every stream untouched, with no extra CPU.
+
+**`TRANSCODE=True`** re-encodes every stream to one fixed format (`TC_HEIGHT`p at `TC_FPS`, H.264
+at `TC_VBITRATE`, stereo AAC 48 kHz). What that buys you:
+
+- **Backups with a different frame rate or resolution no longer upset the player.** Every feed
+  leaves Dispatcharr in the same format, so a failover from a 29.97 feed to a 59.94 one doesn't
+  make Channels DVR drop frames or drift the audio.
+- **The reserve rebuilds itself after an outage.** When a long provider stall uses up the reserve,
+  the profile plays 3% slower (audio tempo-adjusted, pitch unchanged) until the reserve is back to
+  its target, then returns to normal speed. Without transcoding the reserve only comes back on a
+  retune.
+- **The reserve target follows the channel.** It is 1.5 times the longest stall seen on the
+  channel in the last 30 minutes (plus the player's head start), never less than the normal
+  reserve, and at most 150 s (HLS) or 50 s (MPEG-TS). A clean channel keeps the normal reserve; a
+  channel that keeps stalling holds more. Recording extensions grow with it.
+
+**Hardware.** The profile picks an encoder on its own the first time it transcodes (and remembers
+it for an hour in `/tmp/hlsloop-hw.txt` or `/tmp/tsloop-hw.txt`): Intel or AMD graphics through
+VAAPI if `/dev/dri/renderD128` exists, otherwise NVIDIA NVENC, otherwise the CPU. Dispatcharr's
+image includes all three encoders, but the container needs the device:
+
+- **Intel Quick Sync / AMD:** add the device to the Dispatcharr container, for example in
+  Docker Compose:
+  ```yaml
+      devices:
+        - /dev/dri:/dev/dri
+  ```
+  (on Unraid's Docker template, add `--device=/dev/dri` to Extra Parameters).
+- **NVIDIA:** run the container with the NVIDIA runtime (`runtime: nvidia` and
+  `NVIDIA_VISIBLE_DEVICES=all`).
+- **No GPU** (many NAS boxes, ARM): it falls back to the CPU (`libx264 veryfast`), which can be
+  too slow for 1080p60 on small machines. Lower `TC_HEIGHT` / `TC_FPS` or leave transcoding off.
+
+**What it costs:** GPU time (on an Intel iGPU the ffmpeg process still uses roughly a third of one
+CPU core per stream for decoding and scaling), a little picture quality, and about a second more
+delay. Changing speed restarts the encoder, which can show as a brief hitch; the profile changes
+speed at most once every 2 minutes.
+
+Log lines: `transcoding with Intel/AMD graphics (VAAPI)` (or NVENC / the CPU) when a stream
+starts, and `restarting remuxer: reserve Ns, target Ns; playing 3% slower to rebuild it` /
+`...; back to normal speed`.
 
 ### Tuner sharing and the buffer, step by step
 
@@ -759,7 +816,10 @@ switches, or `fetch loop stuck`.
 - **Riding out an outage costs reserve.** The profile waits for the feed to come back as long as
   its reserve lasts (up to 60 seconds), then switches just before the picture would freeze.
 - **Feeds with a different resolution, frame rate or codec** can cause a brief flicker on the
-  client at a failover while its decoder resets. Nothing is re-encoded to hide it.
+  client at a failover while its decoder resets, and a different frame rate can make some players
+  (Channels DVR on Apple TV) drop frames until you tune again. With transcoding off nothing is
+  re-encoded to hide it; turn on [transcoding](#transcoding-optional) if it bothers you.
+- **A reserve used up by a long outage** only comes back on a retune, unless transcoding is on.
 - **A provider outage longer than the reserve** on a channel with no backup. The picture freezes;
   when the provider comes back, the profile recovers on its own, but video from the outage is lost.
 - **Problems after Dispatcharr**, such as a device's Wi-Fi dropping out for longer than its own
@@ -778,7 +838,22 @@ retune. You can delete the profile afterwards.
 ### HLS profile parameters
 
 ```text
--u -c 'import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
+-u -c '# ======================================================================
+# TRANSCODE = False  keeps every stream untouched (stream copy, no extra CPU).
+# TRANSCODE = True   re-encodes every stream to one fixed format. It uses
+#   Intel or AMD graphics (VAAPI; pass /dev/dri to the Dispatcharr container),
+#   NVIDIA (NVENC; needs the NVIDIA runtime), or the CPU if neither is there.
+#   What you get: a backup with a different frame rate or resolution no
+#   longer upsets the player, and after a provider outage the reserve
+#   rebuilds itself by playing slightly slower (3%, pitch unchanged) until
+#   it is full again. The reserve target grows on channels that stall a lot.
+#   What it costs: GPU or CPU time, a little picture quality, ~1 s more delay.
+# ======================================================================
+TRANSCODE=False
+TC_HEIGHT=1080
+TC_FPS=59.94
+TC_VBITRATE="8M"
+import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found",file=sys.stderr);sys.exit(1)
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
@@ -795,12 +870,50 @@ def log(m):
  try:
   with LG:sys.stderr.write("[hlsloop stream] "+str(m)+"\n");sys.stderr.flush()
  except Exception:pass
-ff=None;sig=None;cmap=None;off=0.0
+ff=None;sig=None;cmap=None;off=0.0;TK=1.0;tout=0.0;HW=None;STL=collections.deque();ltk=-1e9
+def hwpick():
+ global HW
+ if HW:return HW
+ hf="/tmp/hlsloop-hw.txt"
+ try:
+  if time.time()-os.path.getmtime(hf)<3600:HW=open(hf).read().strip()
+ except Exception:pass
+ if not HW:
+  HW="cpu";t_=["-f","lavfi","-i","color=s=320x240:d=0.3","-frames:v","5","-f","null","-"]
+  try:
+   if os.path.exists("/dev/dri/renderD128") and sp.run([FF,"-hide_banner","-loglevel","error","-vaapi_device","/dev/dri/renderD128"]+t_[:4]+["-vf","format=nv12,hwupload","-c:v","h264_vaapi"]+t_[4:],capture_output=True,timeout=15).returncode==0:HW="vaapi"
+   elif sp.run([FF,"-hide_banner","-loglevel","error"]+t_[:4]+["-c:v","h264_nvenc"]+t_[4:],capture_output=True,timeout=15).returncode==0:HW="nvenc"
+  except Exception:pass
+  try:open(hf,"w").write(HW)
+  except Exception:pass
+ log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
+ return HW
+def frs(f):
+ for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
+  if abs(f-a)<0.01:return b
+ return "%g"%f
+def ffcmd():
+ b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]
+ if not TRANSCODE:return b+["-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"]
+ h=hwpick();fr=frs(TC_FPS);g=str(int(round(2*TC_FPS)))
+ vf="bwdif=mode=send_frame:deint=interlaced,setpts=(PTS-STARTPTS)*%.4f,fps=%s,scale=-2:%d:flags=fast_bilinear"%(TK,fr,TC_HEIGHT)
+ rc=["-b:v",TC_VBITRATE,"-maxrate",TC_VBITRATE,"-bufsize",TC_VBITRATE,"-g",g]
+ if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
+ elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
+ else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
+ af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
+ return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
+def rtgt():
+ dp=dep or 3*tgt
+ if not TRANSCODE:return dp
+ while STL and mono()-STL[0][0]>1800:STL.popleft()
+ ms=max([x[1] for x in STL],default=0.0)
+ return max(dp,min(150.0,1.5*ms+CL))
 def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
  old=ff
- ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE,stdout=sp.PIPE)
+ ff=sp.Popen(ffcmd(),stdin=sp.PIPE,stdout=sp.PIPE)
  with fql:fq.append(ff)
  if old:
   shut[old.pid]=mono()
@@ -918,7 +1031,7 @@ hasseq=True
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"src":src,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"last":wlast,"part":wpart,"hasseq":hasseq,"seen":list(seen),"off":off,"oend":oend,"cur":cur,"src":src,"dep":dep,"lead":wlead,"xb":xb,"pk":pk,"stk":skf,"to":tout,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 def beat():
@@ -1013,8 +1126,8 @@ def watch():
   nonlocal og,jfail
   jw=requests.Session()
   try:
-   with ql:rv=min(Qs[0]+max(wlead,0.0),(dep or 3*tgt)+tgt)
-   ad=min(int(rv+PM),180);now_=time.time()
+   with ql:rv=min(Qs[0]+max(wlead,0.0),rtgt()+tgt)
+   ad=min(int(rv+PM),240 if TRANSCODE else 180);now_=time.time()
    if og is None:
     try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
     except Exception:og={}
@@ -1142,7 +1255,7 @@ def tpos(ix,x,dur):
 def enq(it):
  with ql:Q.append(it);Qs[0]+=it[2] if it[0]=="seg" else 0
 def writer():
- global wlast,wpart,oend,off,wlead,wb
+ global wlast,wpart,oend,off,wlead,wb,TK,tout,ltk
  lead=wlead;t=mono();cpr=None;cpt=mono();cbv=None;cbt=mono()
  while run:
   try:
@@ -1159,7 +1272,7 @@ def writer():
      remux(it[1])
     else:put(it[1])
     continue
-   dp=dep or 3*tgt;cb=max(CL,255868*it[2]/max(len(it[1]),1)+0.5)
+   dp=rtgt();cb=max(CL,255868*it[2]/max(len(it[1]),1)+0.5)
    cbv=cb if cbv is None else min(cb,cbv+0.02*(now-cbt));cbt=now
    cl=min(cbv+xb,clcap())
    with ql:rmx=any(x[0]=="remux" for x in list(Q)[1:5])
@@ -1167,12 +1280,16 @@ def writer():
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
    if lead>=cl and qs<=dp-cl+tgt:time.sleep(0.02);continue
+   if TRANSCODE and it[5]==0 and now-ltk>120:
+    rt_=rtgt();wk=1.03 if qs<rt_-20 else (1.0 if qs>=rt_ else TK)
+    if wk!=TK:
+     TK=wk;ltk=now;remux("reserve %.0fs, target %.0fs; %s"%(qs,rt_,"playing 3% slower to rebuild it" if wk>1 else "back to normal speed"))
    d=it[1]
    if len(it)<7:it.append(tix(d))
    k=min(65424,max(len(d)//100//188*188,188),len(d)-it[5]);e=it[5]+k
    cd=(it[2] if e>=len(d) else tpos(it[6],e,it[2]))-tpos(it[6],it[5],it[2]) if it[6] else it[2]*k/max(len(d),1)
    cd=max(cd,0.0)
-   put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd
+   put(d[it[5]:it[5]+k]);it[5]+=k;wpart=[it[3],it[5]];lead+=cd*TK;tout+=cd*TK
    with ql:Qs[0]-=cd
    if it[5]>=len(d):
     with ql:Q.popleft()
@@ -1180,6 +1297,10 @@ def writer():
     if it[4] is not None:oend=it[4]+off+it[2]
    save()
   except Exception as e:log("writer error (%s)"%e);time.sleep(1)
+try:
+ j_=json.load(open(st))
+ if time.time()-j_["t"]<4 and j_.get("src")==src:tout=float(j_.get("to",0.0))
+except Exception:pass
 remux()
 threading.Thread(target=pump,daemon=True).start()
 threading.Thread(target=writer,daemon=True).start()
@@ -1266,7 +1387,7 @@ while not gone():
    o=0
    if rpart and rpart[0]==n and rpart[1]<len(d):o=rpart[1]-rpart[1]%188;rpart=None
    enq(["seg",d,q["d"] or tgt,n,p0,o]);dq.append((mono(),q["d"] or tgt));ns+=1
-   last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
+   STL.append((mono(),max(mono()-got-tgt,0.0)));last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   now=mono();SW=max(300.0,30*tgt)
   if cur in fbad and last is not None and not stalled and now-fst>120 and now-got<2*tgt:fbad.pop(cur,None)
@@ -1324,6 +1445,9 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
   gets a fresh connection for a new burst, at most once every 5 minutes. This can cause the
   occasional small skip on a drifting channel.
+- **Optional transcoding** works as in the HLS profile (same switch at the top of the code; see
+  [Transcoding (optional)](#transcoding-optional)). The reserve target with transcoding on is at
+  most 50 s, since raw TS can only hold what the provider bursts plus what it rebuilds.
 - **The head start for extra devices is capped** at the burst depth minus 12 s (usually 8-14 s in
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
@@ -1399,7 +1523,22 @@ stuck feeds and the tuner-sharing head start.
 ### MPEG-TS profile parameters
 
 ```text
--u -c 'import os,sys,time,json,signal,select,shutil,hashlib,threading,collections,subprocess as sp,re,urllib.parse as up
+-u -c '# ======================================================================
+# TRANSCODE = False  keeps every stream untouched (stream copy, no extra CPU).
+# TRANSCODE = True   re-encodes every stream to one fixed format. It uses
+#   Intel or AMD graphics (VAAPI; pass /dev/dri to the Dispatcharr container),
+#   NVIDIA (NVENC; needs the NVIDIA runtime), or the CPU if neither is there.
+#   What you get: a backup with a different frame rate or resolution no
+#   longer upsets the player, and after a provider outage the reserve
+#   rebuilds itself by playing slightly slower (3%, pitch unchanged) until
+#   it is full again. The reserve target grows on channels that stall a lot.
+#   What it costs: GPU or CPU time, a little picture quality, ~1 s more delay.
+# ======================================================================
+TRANSCODE=False
+TC_HEIGHT=1080
+TC_FPS=59.94
+TC_VBITRATE="8M"
+import os,sys,time,json,signal,select,shutil,hashlib,threading,collections,subprocess as sp,re,urllib.parse as up
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found",file=sys.stderr);sys.exit(1)
 src,ua=sys.argv[1],sys.argv[2];chid=sys.argv[3] if len(sys.argv)>3 else "";cdvr=(sys.argv[4] if len(sys.argv)>4 else os.environ.get("CHANNELS_DVR","")).strip().rstrip("/")
@@ -1414,11 +1553,49 @@ def log(m):
  except Exception:pass
 def dif(a,b):return (a-b+WR/2)%WR-WR/2
 ff=None;off=0.0
+TK=1.0;tout=0.0;HW=None;STL=collections.deque();ltk=-1e9
+def hwpick():
+ global HW
+ if HW:return HW
+ hf="/tmp/tsloop-hw.txt"
+ try:
+  if time.time()-os.path.getmtime(hf)<3600:HW=open(hf).read().strip()
+ except Exception:pass
+ if not HW:
+  HW="cpu";t_=["-f","lavfi","-i","color=s=320x240:d=0.3","-frames:v","5","-f","null","-"]
+  try:
+   if os.path.exists("/dev/dri/renderD128") and sp.run([FF,"-hide_banner","-loglevel","error","-vaapi_device","/dev/dri/renderD128"]+t_[:4]+["-vf","format=nv12,hwupload","-c:v","h264_vaapi"]+t_[4:],capture_output=True,timeout=15).returncode==0:HW="vaapi"
+   elif sp.run([FF,"-hide_banner","-loglevel","error"]+t_[:4]+["-c:v","h264_nvenc"]+t_[4:],capture_output=True,timeout=15).returncode==0:HW="nvenc"
+  except Exception:pass
+  try:open(hf,"w").write(HW)
+  except Exception:pass
+ log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
+ return HW
+def frs(f):
+ for a,b in ((59.94,"60000/1001"),(29.97,"30000/1001"),(23.976,"24000/1001"),(47.952,"48000/1001")):
+  if abs(f-a)<0.01:return b
+ return "%g"%f
+def ffcmd():
+ b=[FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000"]
+ if not TRANSCODE:return b+["-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"]
+ h=hwpick();fr=frs(TC_FPS);g=str(int(round(2*TC_FPS)))
+ vf="bwdif=mode=send_frame:deint=interlaced,setpts=(PTS-STARTPTS)*%.4f,fps=%s,scale=-2:%d:flags=fast_bilinear"%(TK,fr,TC_HEIGHT)
+ rc=["-b:v",TC_VBITRATE,"-maxrate",TC_VBITRATE,"-bufsize",TC_VBITRATE,"-g",g]
+ if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
+ elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
+ else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
+ af="aresample=async=1000,asetpts=PTS-STARTPTS"+((",atempo=%.4f"%(1/TK)) if TK!=1.0 else "")
+ return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
+def rtgt():
+ if not TRANSCODE:return RES
+ while STL and mono()-STL[0][0]>1800:STL.popleft()
+ ms=max([x[1] for x in STL],default=0.0)
+ return max(RES,min(QMAX-10.0,1.5*ms+CL))
 def remux(why=None):
  global ff
  if why:log("restarting remuxer: "+why)
  old=ff
- ff=sp.Popen([FF,"-hide_banner","-loglevel","error","-fflags","+discardcorrupt","-probesize","1000000","-analyzeduration","1000000","-i","pipe:0","-map","0:v?","-map","0:a?","-c","copy","-copyts"]+(["-output_ts_offset","%.3f"%off] if off else [])+["-f","mpegts","pipe:1"],stdin=sp.PIPE,stdout=sp.PIPE)
+ ff=sp.Popen(ffcmd(),stdin=sp.PIPE,stdout=sp.PIPE)
  with fql:fq.append(ff)
  if old:
   shut[old.pid]=mono()
@@ -1501,7 +1678,7 @@ cur=rcur or src
 def save():
  try:
   with sl:
-   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"src":src,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"t":time.time()},f)
+   with open(st+".tmp","w") as f:json.dump({"dl":{str(k):v for k,v in dl.items()},"gage":mono()-got,"off":off,"cur":wcur,"src":src,"prim":prim,"lead":wlead,"xb":xb,"pk":vpk,"res":round(Qs[0],2),"stk":skf,"to":tout,"t":time.time()},f)
    os.replace(st+".tmp",st)
  except Exception:pass
 wcur=cur
@@ -1604,8 +1781,8 @@ def watch():
   nonlocal og,jfail
   jw=requests.Session()
   try:
-   with ql:rv=min(Qs[0]+max(wlead,0.0),RES+15.0)
-   ad=min(int(rv+PM),180);now_=time.time()
+   with ql:rv=min(Qs[0]+max(wlead,0.0),rtgt()+15.0)
+   ad=min(int(rv+PM),240 if TRANSCODE else 180);now_=time.time()
    if og is None:
     try:og=json.load(open(JF));og={a:b for a,b in og.items() if isinstance(b,list) and len(b)==2}
     except Exception:og={}
@@ -1700,7 +1877,7 @@ def watch():
    if not base and mono()-t0>120:time.sleep(28)
   time.sleep(2)
 def writer():
- global dl,off,wlead,wcur,wput,wb,dmx
+ global dl,off,wlead,wcur,wput,wb,dmx,TK,tout,ltk
  lead=wlead;t=mono();sv=0.0;remp=False;dh=collections.deque();dt=0.0;ce=max(CL,min(wlead,CL+xb));tc=mono();rxt=-1e9;pxb=xb
  while run:
   try:
@@ -1720,19 +1897,27 @@ def writer():
    if it[0]=="remux":
     with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
+   if TRANSCODE and now-ltk>120:
+    rt_=rtgt();wk=1.03 if qs<rt_-8 else (1.0 if qs>=rt_ else TK)
+    if wk!=TK:
+     TK=wk;ltk=now;remux("reserve %.0fs, target %.0fs; %s"%(qs,rt_,"playing 3% slower to rebuild it" if wk>1 else "back to normal speed"))
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
    cd=max(ca-it[8],0.0)
    rx=nrx[0]>0 and qs>4.0;ce=min(max(min(CL+xb+(RXL if rx else 0.0),clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc)),ce+(RXR if rx else RAMP)*(now-tc)+max(xb-pxb,0.0));tc=now;pxb=xb
    if cd>0 and lead>=ce and qs<=QMAX+30:time.sleep(0.02);continue
-   put(d[it[7]:en]);it[6]=i+1;it[7]=en;it[8]=max(ca,it[8]);wput=mono();lead=min(lead+cd,ce+10.0);dl=sn;wcur=it[4]
+   put(d[it[7]:en]);it[6]=i+1;it[7]=en;it[8]=max(ca,it[8]);wput=mono();lead=min(lead+cd*TK,ce+10.0);tout+=cd*TK;dl=sn;wcur=it[4]
    with ql:
     Qs[0]-=cd
     if en>=len(d):Q.popleft();Qs[0]-=it[2]-it[8]
    if en>=len(d):dl=it[3]
    if en>=len(d) or mono()-sv>0.2:save();sv=mono()
   except Exception as e:log("writer error (%s)"%e);time.sleep(1)
+try:
+ j_=json.load(open(st))
+ if time.time()-j_["t"]<4 and j_.get("src")==src:tout=float(j_.get("to",0.0))
+except Exception:pass
 remux()
 threading.Thread(target=pump,daemon=True).start()
 threading.Thread(target=writer,daemon=True).start()
@@ -1810,7 +1995,7 @@ def conn(r):
   if adv>0 and not hc.get("s"):hc["s"]=1;log("input: first video received from %s, building the reserve"%up.urlsplit(cur).netloc)
   if adv>0 and hc.get("e"):log("input: video back after %d stream errors (reserve %.1fs)"%(hc["e"],Qs[0]));hc["e"]=0
   if adv>0:
-   got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
+   STL.append((mono(),max(mono()-got-1.0,0.0)));got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
    if cur in fbad and got-fst>120:fbad.pop(cur,None)
   if out:enq(["seg",bytes(out),adv,dict(last),cur,ix,0,0,0.0])
   if jump is not None and jump<0:raise ValueError("timeline jumped %.0fs inside the stream"%jump)
