@@ -1010,7 +1010,7 @@ def hwpick():
  log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
  return HW
 ZB=20000+(os.getpid()%7000)*4;ZP=[ZB+2];zerr=[0]
-def sxp(k):return "if(isnan(PREV_OUTPTS),PTS-STARTPTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
+def sxp(k):return "if(isnan(PREV_OUTPTS),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
 def zsend(port,msg):
  import socket,struct
  c=socket.create_connection(("127.0.0.1",port),timeout=3)
@@ -1093,7 +1093,7 @@ def ffcmd():
  if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
  elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
  else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
- af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,asetpts=PTS-STARTPTS,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
+ af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
  return dep or 3*tgt
@@ -1469,7 +1469,7 @@ def writer():
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
-   if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7):time.sleep(0.02);continue
+   if lead>=cl and qs<=dp-cl+tgt and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7 and lead<clcap()):time.sleep(0.02);continue
    if TRANSCODE and it[5]==0 and mono()-fst>90:
     dp_=dep or 3*tgt;rstep(mot(it[1]),now,qs,dp_*0.5,dp_*0.75)
    d=it[1]
@@ -1575,7 +1575,7 @@ while not gone():
    o=0
    if rpart and rpart[0]==n and rpart[1]<len(d):o=rpart[1]-rpart[1]%188;rpart=None
    enq(["seg",d,q["d"] or tgt,n,p0,o]);dq.append((mono(),q["d"] or tgt));ns+=1
-   STL.append((mono(),max(mono()-got-tgt,0.0)));last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
+   last=n;bad.discard(n);seen.append(q["p"]);gap=None;got=mono();stalled=False;ph=0
    if p0 is not None:qend=p0+moff+(q["d"] or tgt)
   now=mono();SW=max(300.0,30*tgt)
   if cur in fbad and last is not None and not stalled and now-fst>120 and now-got<2*tgt:fbad.pop(cur,None)
@@ -1780,7 +1780,7 @@ def hwpick():
  log("transcoding with "+{"vaapi":"Intel/AMD graphics (VAAPI)","nvenc":"NVIDIA graphics (NVENC)","cpu":"the CPU (no hardware encoder found)"}[HW])
  return HW
 ZB=20000+(os.getpid()%7000)*4;ZP=[ZB+2];zerr=[0]
-def sxp(k):return "if(isnan(PREV_OUTPTS),PTS-STARTPTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
+def sxp(k):return "if(isnan(PREV_OUTPTS),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)*%.4f)"%k
 def zsend(port,msg):
  import socket,struct
  c=socket.create_connection(("127.0.0.1",port),timeout=3)
@@ -1863,7 +1863,7 @@ def ffcmd():
  if h=="vaapi":b+=["-vaapi_device","/dev/dri/renderD128"];vc=["-vf",vf+",format=nv12,hwupload","-c:v","h264_vaapi"]+rc+["-bf","0"]
  elif h=="nvenc":vc=["-vf",vf+",format=yuv420p","-c:v","h264_nvenc","-preset","p4"]+rc+["-bf","0"]
  else:vc=["-vf",vf+",format=yuv420p","-c:v","libx264","-preset","veryfast"]+rc
- af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,asetpts=PTS-STARTPTS,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
+ af="azmq=b=tcp\\\\://127.0.0.1\\\\:%d,aresample=async=1000,atempo@a=tempo=%.4f"%(ZP[0]+1,1/TK)
  return b+["-i","pipe:0","-map","0:v:0?","-map","0:a:0?"]+vc+["-af",af,"-c:a","aac","-b:a","192k","-ac","2","-ar","48000","-output_ts_offset","%.3f"%(tout+1.4),"-f","mpegts","pipe:1"]
 def rtgt():
  return RES
@@ -2174,16 +2174,16 @@ def writer():
    if it[0]=="remux":
     with ql:Q.popleft();nrx[0]-=1
     off=it[3];remux(it[1]);continue
-   if TRANSCODE and it[6]==0 and mono()-fst>90:
-    if len(RFS["b"])<8000000:RFS["b"]+=it[1]
-    RFS["t"]+=it[2]
-    if RFS["t"]>=4:m_=mot(bytes(RFS["b"]));RFS["b"]=bytearray();RFS["t"]=0.0;rstep(m_,now,qs,RES*0.5,RES*0.8)
    d=it[1];ix=it[5];i=it[6]
    if i<len(ix):en,ca,sn=ix[i]
    else:en,ca,sn=len(d),it[2],it[3]
    cd=max(ca-it[8],0.0)
    rx=nrx[0]>0 and qs>4.0;ce=min(max(min(CL+xb+(RXL if rx else 0.0),clcap(),max(ce,lead+qs-STALL-RLOW)),ce-0.01*(now-tc)),ce+(RXR if rx else RAMP)*(now-tc)+max(xb-pxb,0.0));tc=now;pxb=xb
    if cd>0 and lead>=ce and qs<=QMAX+30:time.sleep(0.02);continue
+   if TRANSCODE and it[6]==0 and mono()-fst>90:
+    if len(RFS["b"])<8000000:RFS["b"]+=it[1]
+    RFS["t"]+=it[2]
+    if RFS["t"]>=4:m_=mot(bytes(RFS["b"]));RFS["b"]=bytearray();RFS["t"]=0.0;rstep(m_,now,qs,RES*0.5,RES*0.8)
    put(d[it[7]:en]);it[6]=i+1;it[7]=en;it[8]=max(ca,it[8]);wput=mono();lead=min(lead+cd*TK,ce+10.0);tout+=cd*TK;dl=sn;wcur=it[4]
    with ql:
     Qs[0]-=cd
@@ -2272,7 +2272,7 @@ def conn(r):
   if adv>0 and not hc.get("s"):hc["s"]=1;log("input: first video received from %s, building the reserve"%up.urlsplit(cur).netloc)
   if adv>0 and hc.get("e"):log("input: video back after %d stream errors (reserve %.1fs)"%(hc["e"],Qs[0]));hc["e"]=0
   if adv>0:
-   STL.append((mono(),max(mono()-got-1.0,0.0)));got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
+   got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
    if cur in fbad and got-fst>120:fbad.pop(cur,None)
   if out:enq(["seg",bytes(out),adv,dict(last),cur,ix,0,0,0.0])
   if jump is not None and jump<0:raise ValueError("timeline jumped %.0fs inside the stream"%jump)
