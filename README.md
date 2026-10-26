@@ -372,7 +372,7 @@ profile exists for providers that don't offer HLS.
 |---|---|---|
 | Best source | **Xtream Codes account** (its `.ts` addresses are read as HLS automatically) | **Xtream Codes account** |
 | Provider stream URLs | `.m3u8`, or Xtream `.ts` addresses (switched to `.m3u8` automatically) | `.ts` (or no extension) only |
-| Reserve held in Dispatcharr | about 60 s (the provider's whole playlist window) | about 20-26 s (only what the provider bursts on connect) |
+| Reserve held in Dispatcharr | about 56 s (a 60 s join minus the 4 s player head start) | about 20-26 s (only what the provider bursts on connect) |
 | Provider hiccup or late video | Re-fetches the missed segments from the playlist; nothing is lost if it is still listed (usually about a minute) | Only the reserve covers it; video from an outage longer than the reconnect overlap is lost for good |
 | Reconnects | Always continue the same timeline | Usually seamless (overlap is removed), but the provider can land on a different timeline (about 1 in 6 on our test provider), which shows as a small skip or repeat |
 | Extra head start per extra device | 5 s each, up to about 40 s in total | 5 s each, capped at about 8-14 s so failover keeps its headroom |
@@ -467,7 +467,7 @@ written, and nothing is written outside the container.
 |---|---|---|---|---|
 | `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
 | `hlsloop-hw.txt`, `tsloop-hw.txt` | `/tmp` | The encoder transcoding picked (`vaapi`, `nvenc` or `cpu`). A few bytes. | So the encoder test runs once, not on every tune. Only written with transcoding on. | Re-checked when it is more than an hour old; `/tmp` is cleared whenever the Dispatcharr container restarts. |
-| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten about once a second while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
+| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten continuously while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
 
 To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-* /tmp/tsloop-*`
 inside the container) while nothing is playing.
@@ -479,27 +479,31 @@ Both stream profiles can re-encode video instead of passing it through. It's off
 **Use transcoding whenever your hardware allows it**, ideally with a GPU (see [Use a GPU](#use-a-gpu)).
 It is the only way the profiles can keep one steady format across backup feeds and refill the
 reserve after a long outage. Without it, there is little more the profiles can do: a backup with
-a different frame rate can upset the player, and a drained reserve only comes back on a retune.
+a different frame rate can upset the player, and a drained reserve only comes back on a retune
+(the MPEG-TS profile can also top it up by reconnecting for a fresh burst when the provider drifts behind).
 
 > [!IMPORTANT]
 > **With transcoding on, playback runs 3% slower for a while after a provider problem.** If the
-> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS), video and audio
+> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS; not in the first
+> 90 seconds after tuning or switching feeds, and at least a minute after the last change), video and audio
 > play 3% slower together, with the audio pitch unchanged, until the reserve is back to three
 > quarters (about 45 s on HLS, 16 s on MPEG-TS). The rest of the time video plays at its real speed.
 >
 > - **Two clean switches per refill.** The encoder is restarted once when the slowdown starts and
 >   once when it ends, with the speed set from the first frame. Nothing is changed in a running
->   encoder, so audio and video can't drift apart. Each restart waits for the next keyframe and
->   continues the timeline from the timestamps already sent, correcting for where the audio sits
->   in the stream, so the picture doesn't pause. This works whether or not the provider's HLS
->   segments start on keyframes.
+>   encoder, so audio and video can't drift apart. Each restart waits up to 10 seconds for the
+>   next keyframe (then restarts anyway), keeps the output timeline continuous and corrects for
+>   where the audio sits in the stream, so the picture doesn't pause. On HLS the new encoder's
+>   start is worked out from the timestamps already fed in, so this works whether or not the
+>   provider's segments start on keyframes.
 > - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 17 minutes on
->   HLS and 3 to 5 minutes on MPEG-TS.
+>   HLS (up to about 26 minutes from empty) and 3 to 5 minutes on MPEG-TS.
 > - **What you might see:** while it runs, a 60 fps source repeats one frame about twice a second.
 >   On a smooth, fast camera pan that can show as a tiny hitch.
 > - **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would
->   mean stretching its timestamps, which causes crackle or drift. On the normal path the reserve
->   only comes back on a retune.
+>   mean stretching its timestamps, which causes crackle or drift. Without transcoding the HLS
+>   reserve only comes back on a retune, and the MPEG-TS reserve only through a fresh connection's
+>   burst.
 >
 > See [Why 3%](#why-3) for the research behind the rate.
 
@@ -524,7 +528,7 @@ The rate is a trade-off between refilling quickly and staying below what people 
   it may believe they see it; the fair test is a blind comparison.
 
 3% stays under the motion and speech thresholds and under both broadcast precedents, and it
-refills quickly enough that a refill is usually over within a quarter of an hour. The figures above come from the cited
+refills quickly enough that a refill is usually over in under 20 minutes. The figures above come from the cited
 studies and are approximate.
 
 ### Why turn it on
@@ -645,9 +649,9 @@ The profile replaces Dispatcharr's stream fetcher with a small Python program th
 Dispatcharr. It holds the cushion itself and feeds Channels DVR at a steady pace, the way an HDMI
 encoder does:
 
-- **The reserve lives in the profile, not in the players.** It joins the provider's whole
-  playlist window (about 60 seconds behind live on 10-second segments) and keeps almost all of
-  it as a private reserve. When the provider publishes late, the reserve keeps video flowing to
+- **The reserve lives in the profile, not in the players.** It joins up to about 60 seconds
+  back in the provider's playlist (at least 3 segments, or the whole playlist if it's shorter) and
+  keeps almost all of it as a private reserve. When the provider publishes late, the reserve keeps video flowing to
   every device at once. When the provider catches up, the reserve refills at download speed.
 - **Paced by video timestamps.** Video leaves the profile at exactly real time, timed by each
   frame's timestamp rather than by bytes, so players receive it smoothly and every device on a
@@ -702,8 +706,9 @@ encoder does:
   including to a backup with a different bitrate or frame rate, so players don't speed up or
   stall.
 - **Holds back broken segments.** If a segment's audio and video are more than 3 seconds apart
-  (seen after provider restarts), it isn't sent, so the player never plays sound from one moment
-  over picture from another.
+  (seen after provider restarts), the profile holds that feed back for up to about 30 seconds of
+  video while it tries a backup, so the player doesn't play sound from one moment over picture from
+  another. With no working backup, or before anything has played yet, the segments are passed through.
 - **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
   (and never plays the black placeholder) until the provider comes back.
 - **Keeps Dispatcharr from restarting the stream.** Whenever the output would go quiet for 2
@@ -730,8 +735,8 @@ same channel. A device that joins later starts at the newest video Channels DVR 
 use a cushion that built up in the first player. The profile handles this by keeping the cushion
 on the server and sizing what it hands out to the devices actually watching:
 
-1. **First tune.** The profile joins the provider's whole playlist window, about 60 seconds of
-   video on 10-second segments. It sends about 4 seconds ahead of real time to Channels DVR and
+1. **First tune.** The profile joins up to about 60 seconds back in the provider's playlist
+   (the whole playlist if it's shorter). It sends about 4 seconds ahead of real time to Channels DVR and
    keeps the other ~56 seconds as its reserve.
 2. **Steady state.** Video goes out at exactly real time, paced by its timestamps. When the
    provider is late, the reserve covers the wait; when the provider catches up, the profile
@@ -781,7 +786,7 @@ own padding, so recordings keep the end of the program. Details in [Recordings](
 This is the part people mix up, so in plain English:
 
 - **From your IPTV provider into Dispatcharr: HLS.** Your provider's stream URLs must be HLS
-  (they end in `.m3u8`). That's what the profile reads.
+  (usually `.m3u8`; Xtream `.ts` addresses are switched to their `.m3u8` form). That's what the profile reads.
 - **From Dispatcharr out to Channels DVR: MPEG-TS.** The profile always turns the stream into
   MPEG-TS. Leave Dispatcharr's output on MPEG-TS, and set the Channels DVR source's
   **Stream Format** to **MPEG-TS**.
@@ -818,7 +823,7 @@ it at its default.
   stream processes.
 - **Your provider must offer HLS** for the channels. **Use an Xtream Codes account if you can**
   (see [Use an Xtream Codes account](#use-an-xtream-codes-account)): its `.ts` addresses are
-  switched to their `.m3u8` form automatically. Other providers' stream URLs must end in `.m3u8`. This is only what Dispatcharr receives from the provider; what it
+  switched to their `.m3u8` form automatically. Other providers' stream URLs must return an HLS playlist (usually they end in `.m3u8`). This is only what Dispatcharr receives from the provider; what it
   sends to Channels DVR stays MPEG-TS. Check under **Streams** in
   Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
   HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
@@ -880,20 +885,20 @@ with `[hlsloop stream]`:
 | `viewer buffer: N viewers on Channels DVR ch N, sent the new viewer a Ns head start (lead now Ns, reserve Ns)` | Another device joined; every device on the tuner got the extra head start. `reserve at its floor` means the reserve was too low to give the full 5 seconds. |
 | `viewer buffer: reserve rebuilt to Ns` | The reserve finished refilling after joins used part of it. |
 | `viewer buffer: Channels DVR source <source> is out of date, refreshing it` | The Channels DVR source didn't match Dispatcharr's playlist, so the profile refreshed it. |
-| `viewer buffer: off ...` / `viewer buffer: waiting ...` | The viewer buffer is off or waiting for Channels DVR on this stream (the reason follows); playback is unaffected and uses the single-viewer head start. It keeps checking, so a recording or viewer that arrives later is still picked up. |
+| `viewer buffer: off ...` / `viewer buffer: waiting ...` | The viewer buffer is off or waiting for Channels DVR on this stream (the reason follows); playback is unaffected and uses the single-viewer head start. It keeps checking (except `off (could not read this channel id ...)`, which lasts for the whole stream), so a recording or viewer that arrives later is still picked up. |
 | `catching up N segments` | The provider stalled; the profile downloaded what it missed and refilled the reserve. |
 | `playlist stale Ns, re-resolving` | The playlist stopped updating; the profile requested it again. |
 | `edge server is behind, waiting for it to catch up` | A provider server was a few segments behind; nothing was replayed. |
-| `provider restarted the channel, rejoining` | The provider restarted the channel; the profile rejoined it. |
+| `provider restarted the channel, rejoining at the live edge` | The provider restarted the channel; the profile rejoined it. |
 | `...; switching to stream N of M` | The feed died or went to the offline placeholder; the profile moved to the next backup stream. |
 | `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
 | `...; no backup stream is answering right now, so staying on this feed` | Every backup is down too; the profile waits and checks them again. |
 | `audio and video are Ns apart in this feed; holding it back` / `audio and video back in step; rejoining smoothly` | The provider sent segments with audio and video out of step; they were held back instead of played. |
 | `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
-| `continuing on the new stream timeline seamlessly (offset Xs)` | After a switch to a backup or a provider channel restart, the new stream's timestamps were shifted to continue where the old ones stopped. |
+| `restarting remuxer: continuing on the new stream timeline seamlessly (offset Xs)` | After a switch to a backup, a provider channel restart, or audio and video coming back in step, the new stream's timestamps were shifted to continue where the old ones stopped. |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and the channel has no backup; the profile keeps waiting for it. |
 | `resuming after Dispatcharr restart` | Dispatcharr restarted the stream; the profile picked up where it stopped. |
-| `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr's database; failover is off for that stream. |
+| `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr's database; failover can't be used until a later read succeeds (it tries again at each switch). |
 | `playlist error (...); retry N in Ns` | A request failed and is being retried. |
 | `skipped segment N` | A segment could not be downloaded in time and was skipped so playback could continue. |
 | `provider is delivering 0.NNx real time and the reserve fell Ns to Ns; switching to stream N of M` | The feed stayed far too slow for 5 minutes; the profile moved to the next backup. |
@@ -1570,7 +1575,8 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   that has stayed slower than real time for 5 minutes. Refused or failed connections are retried
   on the same feed. A backup is joined only as deep as the outage lasted.
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
-  gets a fresh connection for a new burst, at most once every 5 minutes. This can cause the
+  gets a fresh connection for a new burst, at most once every 5 minutes (sooner if the reserve is
+  nearly empty). This can cause the
   occasional small skip on a drifting channel.
 - **Optional transcoding** works as in the HLS profile; see [Transcoding (optional)](#transcoding-optional).
 - **The head start for extra devices is capped** at the burst depth minus 12 s (usually 8-14 s in
@@ -1588,7 +1594,7 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
 - **Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension). **Use an
   Xtream Codes account if you can** (see [Use an Xtream Codes account](#use-an-xtream-codes-account)),
   or an M3U account with `output=ts`. This profile does no conversion; an `.m3u8`
-  URL is refused with `this stream URL is HLS; use the HLS profile for it`.
+  URL that answers with an HLS playlist is refused with `this stream URL is HLS; use the HLS profile for it`.
 - Dispatcharr's output and the Channels DVR source's **Stream Format** stay on **MPEG-TS**, as for
   the HLS profile.
 
@@ -1610,7 +1616,7 @@ Messages start with `[tsloop stream]`.
 | `reconnected, dropping Ns already sent (reserve Ns)` | A reconnect overlapped what was sent; the repeat was removed. Normal. |
 | `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
 | `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
-| `provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see above). |
+| `input: provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see above). |
 | `...; switching to stream N of M` | Failover to the next backup. |
 | `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
 | `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
