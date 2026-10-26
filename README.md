@@ -487,17 +487,31 @@ The costs: GPU (or CPU) time, a little picture quality, and a few seconds more d
 
 ### Settings
 
-At the very top of the profile code:
+At the very top of the profile code, set one line:
 
-| Variable | Default | What it does |
+```
+TRANSCODE="1080p60"
+```
+
+| Setting | Output | Bitrate |
 |---|---|---|
-| `TRANSCODE` | `False` | `True` turns transcoding on. |
-| `TC_HEIGHT` | `1080` | Output height in pixels (width follows the picture's shape). Use `720` on weaker hardware. |
-| `TC_FPS` | `59.94` | Output frame rate. Set it to the highest rate your provider uses (`50` in 50 Hz countries). Lower feeds repeat frames; higher feeds drop them. |
-| `TC_VBITRATE` | `"8M"` | Video bitrate. `"6M"` is plenty for 720p. |
-| `TC_LEAD` | `8.0` | Seconds of video the player is kept ahead while transcoding (HLS profile). Raise it if the encoder ever pauses long enough to reach the TV. |
+| `"off"` | passed through untouched (default) | as the provider sends it |
+| `"1080p60"` | 1080p, 59.94 fps | 6 Mbps |
+| `"1080p30"` | 1080p, 29.97 fps | 4.5 Mbps |
+| `"720p60"` | 720p, 59.94 fps | 4.5 Mbps |
+| `"720p30"` | 720p, 29.97 fps | 3 Mbps |
+| `"1080p50"`, `"1080p25"`, `"720p50"`, `"720p25"` | the same for 50 Hz countries | |
 
-Audio is always stereo AAC at 48 kHz.
+**Which frame rate?** Pick the highest one your channels use. 60 suits sports, news and most US
+broadcast channels; a 30 fps channel just shows each frame twice, so nothing is lost. 30 is fine
+for mostly movies and entertainment and is easier on weak hardware, but 60 fps sports will look
+choppier. In 50 Hz countries (Europe, the UK, Australia and others) use 50 or 25 instead, since
+60 or 30 there makes motion judder.
+
+**Which size?** 1080p with a GPU, 720p on weak hardware or when encoding on the CPU. The bitrates
+match what IPTV providers typically send, so quality holds without making the stream bigger.
+
+Audio is always stereo AAC at 48 kHz. An unknown setting counts as `"off"`.
 
 ### Use a GPU
 
@@ -510,7 +524,7 @@ The profile picks an encoder on its own the first time it transcodes and logs wh
 
 1. **Intel Quick Sync or AMD** (VAAPI), if `/dev/dri/renderD128` exists in the container.
 2. **NVIDIA** (NVENC), if the NVIDIA runtime is available.
-3. **The CPU** (`libx264`), otherwise. Use a lower `TC_HEIGHT` and `TC_FPS` if you have to run here.
+3. **The CPU** (`libx264`), otherwise. Use a 720p setting if you have to run here.
 
 Dispatcharr's image already includes all three encoders. The container just needs access to the
 GPU:
@@ -864,22 +878,38 @@ retune. You can delete the profile afterwards.
 
 ```text
 -u -c '# ======================================================================
-# TRANSCODE = False  keeps every stream untouched (stream copy, no extra CPU).
-# TRANSCODE = True   re-encodes every stream to one fixed format. It uses
-#   Intel or AMD graphics (VAAPI; pass /dev/dri to the Dispatcharr container),
-#   NVIDIA (NVENC; needs the NVIDIA runtime), or the CPU if neither is there.
-#   What you get: a backup with a different frame rate or resolution no
-#   longer upsets the player, and after a provider outage the reserve
-#   rebuilds itself by playing slightly slower (3%, pitch unchanged) until
-#   it is full again. The reserve target grows on channels that stall a lot.
-#   What it costs: GPU or CPU time, a little picture quality, ~1 s more delay.
-#   TC_LEAD keeps the player this many seconds ahead while transcoding, so a
-#   short encoder pause (a few seconds when the GPU is busy) never reaches the TV.
+# TRANSCODE: re-encode every stream to one format, or pass it through.
+#
+#   TRANSCODE="off"       pass through untouched (default, no extra CPU/GPU)
+#   TRANSCODE="1080p60"   1080p, 59.94 fps, 6 Mbps
+#   TRANSCODE="1080p30"   1080p, 29.97 fps, 4.5 Mbps
+#   TRANSCODE="720p60"    720p, 59.94 fps, 4.5 Mbps
+#   TRANSCODE="720p30"    720p, 29.97 fps, 3 Mbps
+#   50 Hz countries (Europe, UK, Australia and others): use
+#   "1080p50", "1080p25", "720p50" or "720p25" instead.
+#
+# Which frame rate? Pick the highest one your channels use.
+#   60: sports, news and most US broadcast channels. Smooth motion.
+#       A 30 fps channel simply shows each frame twice, so nothing is lost.
+#   30: fine if your channels are mostly movies and entertainment, and
+#       easier on weak hardware, but 60 fps sports will look choppier.
+#   50 or 25: the same choice for 50 Hz countries. Do not use 60 or 30
+#       there, it makes motion judder.
+# Which size? 1080p if you have a GPU. 720p for weak hardware or when
+#   encoding on the CPU. The bitrates match what IPTV providers send
+#   (about 3 to 6 Mbps), so quality holds without bloating the stream.
+#
+# Why transcode? Every channel leaves Dispatcharr in the same format, so
+# a backup with a different frame rate never upsets the player, and the
+# reserve rebuilds itself after a provider outage. Costs a few seconds
+# more delay and some GPU time. Give the Dispatcharr container a GPU
+# (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
+# shows how. Without one it falls back to the CPU.
 # ======================================================================
-TRANSCODE=False
-TC_HEIGHT=1080
-TC_FPS=59.94
-TC_VBITRATE="8M"
+TRANSCODE="off"
+TCP={"1080p60":(1080,59.94,"6M"),"1080p30":(1080,29.97,"4.5M"),"720p60":(720,59.94,"4.5M"),"720p30":(720,29.97,"3M"),"1080p50":(1080,50,"6M"),"1080p25":(1080,25,"4.5M"),"720p50":(720,50,"4.5M"),"720p25":(720,25,"3M")}
+TC_HEIGHT,TC_FPS,TC_VBITRATE=TCP.get(str(TRANSCODE).lower().strip(),(0,0,""))
+TRANSCODE=TC_HEIGHT>0
 TC_LEAD=8.0
 import os,sys,time,json,signal,re,select,shutil,hashlib,threading,collections,subprocess as sp,urllib.parse as up
 try:import requests
@@ -1552,20 +1582,39 @@ stuck feeds and the tuner-sharing head start.
 
 ```text
 -u -c '# ======================================================================
-# TRANSCODE = False  keeps every stream untouched (stream copy, no extra CPU).
-# TRANSCODE = True   re-encodes every stream to one fixed format. It uses
-#   Intel or AMD graphics (VAAPI; pass /dev/dri to the Dispatcharr container),
-#   NVIDIA (NVENC; needs the NVIDIA runtime), or the CPU if neither is there.
-#   What you get: a backup with a different frame rate or resolution no
-#   longer upsets the player, and after a provider outage the reserve
-#   rebuilds itself by playing slightly slower (3%, pitch unchanged) until
-#   it is full again. The reserve target grows on channels that stall a lot.
-#   What it costs: GPU or CPU time, a little picture quality, ~1 s more delay.
+# TRANSCODE: re-encode every stream to one format, or pass it through.
+#
+#   TRANSCODE="off"       pass through untouched (default, no extra CPU/GPU)
+#   TRANSCODE="1080p60"   1080p, 59.94 fps, 6 Mbps
+#   TRANSCODE="1080p30"   1080p, 29.97 fps, 4.5 Mbps
+#   TRANSCODE="720p60"    720p, 59.94 fps, 4.5 Mbps
+#   TRANSCODE="720p30"    720p, 29.97 fps, 3 Mbps
+#   50 Hz countries (Europe, UK, Australia and others): use
+#   "1080p50", "1080p25", "720p50" or "720p25" instead.
+#
+# Which frame rate? Pick the highest one your channels use.
+#   60: sports, news and most US broadcast channels. Smooth motion.
+#       A 30 fps channel simply shows each frame twice, so nothing is lost.
+#   30: fine if your channels are mostly movies and entertainment, and
+#       easier on weak hardware, but 60 fps sports will look choppier.
+#   50 or 25: the same choice for 50 Hz countries. Do not use 60 or 30
+#       there, it makes motion judder.
+# Which size? 1080p if you have a GPU. 720p for weak hardware or when
+#   encoding on the CPU. The bitrates match what IPTV providers send
+#   (about 3 to 6 Mbps), so quality holds without bloating the stream.
+#
+# Why transcode? Every channel leaves Dispatcharr in the same format, so
+# a backup with a different frame rate never upsets the player, and the
+# reserve rebuilds itself after a provider outage. Costs a few seconds
+# more delay and some GPU time. Give the Dispatcharr container a GPU
+# (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
+# shows how. Without one it falls back to the CPU.
 # ======================================================================
-TRANSCODE=False
-TC_HEIGHT=1080
-TC_FPS=59.94
-TC_VBITRATE="8M"
+TRANSCODE="off"
+TCP={"1080p60":(1080,59.94,"6M"),"1080p30":(1080,29.97,"4.5M"),"720p60":(720,59.94,"4.5M"),"720p30":(720,29.97,"3M"),"1080p50":(1080,50,"6M"),"1080p25":(1080,25,"4.5M"),"720p50":(720,50,"4.5M"),"720p25":(720,25,"3M")}
+TC_HEIGHT,TC_FPS,TC_VBITRATE=TCP.get(str(TRANSCODE).lower().strip(),(0,0,""))
+TRANSCODE=TC_HEIGHT>0
+TC_LEAD=8.0
 import os,sys,time,json,signal,select,shutil,hashlib,threading,collections,subprocess as sp,re,urllib.parse as up
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found",file=sys.stderr);sys.exit(1)
