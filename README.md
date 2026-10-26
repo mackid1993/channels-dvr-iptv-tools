@@ -898,7 +898,7 @@ with `[hlsloop stream]`:
 | `reserve: empty, video now arrives only as fast as the provider publishes it` / `reserve: refilled to Ns` | The provider fell behind for longer than the reserve covers. This is the line that matches visible buffering. |
 | `input: fetch loop stuck for Ns, stopping keepalive so Dispatcharr restarts the stream` | The provider connection hung; Dispatcharr restarts the stream. |
 | `the previous process got stuck reading this feed; switching to stream N of M` | After that restart, the profile moved to the next backup. |
-| `status: main stream, reserve Ns, client lead Ns, ... last 10 min: N playlist errors, N catch-ups, N switches, Ns keepalive` | A summary every 10 minutes. A healthy session shows a full reserve and few or no switches. |
+| `status: main stream, reserve Ns, client lead Ns, ... last 10 min: N playlist retries, N catch-ups, N switches, Ns keepalive` | A summary every 10 minutes. A healthy session shows a full reserve and few or no switches. |
 
 Dispatcharr's `Stream unhealthy - no data for 10s` warning should not appear for streams using
 this profile. **A healthy session** logs the channel being found, the occasional `catching up`, and
@@ -1419,7 +1419,7 @@ def stat():
    if mono()-t0>=600:
     t0=mono()
     with CK:c=dict(CNT);CNT.clear()
-    log("status: %s stream, reserve %.0fs, client lead %.1fs, extra lead for shared viewers %.0fs, viewers %d; last 10 min: %d playlist errors, %d catch-ups, %d switches, %.0fs keepalive"%("main" if cur==src else "backup",qs,wlead,xb,pk,c.get("pe",0),c.get("cu",0),c.get("sw",0),c.get("ka",0)))
+    log("status: %s stream, reserve %.0fs, client lead %.1fs, extra lead for shared viewers %.0fs, viewers %d; last 10 min: %d playlist retries, %d catch-ups, %d switches, %.0fs keepalive"%("main" if cur==src else "backup",qs,wlead,xb,pk,c.get("pe",0),c.get("cu",0),c.get("sw",0),c.get("ka",0)))
   except Exception:pass
 def tix(d):
  out=[];b=None;m=0.0
@@ -1469,7 +1469,7 @@ def writer():
    if rmx and qs>4.0:cl=max(cl,min(4.0,clcap()))
    if cpr is not None and cl<cpr:cl=max(cl,cpr-0.1*(now-cpt))
    cpr=cl;cpt=now
-   if lead>=cl and (qs<=dp-cl+tgt or (TRANSCODE and lead>=cl+5)) and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7 and lead<clcap()):time.sleep(0.02);continue
+   if lead>=cl and (qs<=dp-cl+tgt or (TRANSCODE and lead>=cl)) and not (TRANSCODE and qs>2 and mono()-OWT[0]>0.7 and lead<clcap()):time.sleep(0.02);continue
    if TRANSCODE and it[5]==0 and mono()-fst>90:
     dp_=dep or 3*tgt;rstep(mot(it[1]),now,qs,dp_*0.5,dp_*0.75)
    d=it[1]
@@ -1667,7 +1667,7 @@ Messages start with `[tsloop stream]`.
 |---|---|
 | `input: first video received from <host>, building the reserve` | The stream started. |
 | `viewer buffer: ...` | Same as the HLS profile (channel found, head start sent, rebuild). `head start dropped` means the reserve didn't have room. |
-| `stream error (...); reconnect N in Ns` then `input: video back after N stream errors (reserve Ns)` | The connection dropped and came back. Normal now and then. |
+| `stream error (...); reconnect N in Ns` then `input: video back after N stream retries (reserve Ns)` | The connection dropped and came back. Normal now and then. |
 | `reconnected, dropping Ns already sent (reserve Ns)` | A reconnect overlapped what was sent; the repeat was removed. Normal. |
 | `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
 | `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
@@ -1680,7 +1680,7 @@ Messages start with `[tsloop stream]`.
 | `reserve empty: ... playback will pause until video arrives` / `reserve refilled to Ns` | The provider fell behind for longer than the reserve covers. This matches visible buffering. |
 | `output: stopped for Ns and the reader is stuck; no keepalive, so Dispatcharr can restart the stream` | The provider connection hung; Dispatcharr restarts the stream, and the new copy goes to the next backup (`the previous process got stuck reading this feed`). |
 | `input stream is arriving faster than real time ...` | Flood protection kicked in (usually an offline channel's placeholder clip). |
-| `status: stream N of M, reserve Ns, client lead Ns, ... last 10 min: N stream errors, N remuxes, N failovers, Ns keepalive` | A summary every 10 minutes. |
+| `status: stream N of M, reserve Ns, client lead Ns, ... last 10 min: N stream retries, N remuxes, N failovers, Ns keepalive` | A summary every 10 minutes. |
 
 **A healthy session** shows the first-video line, the viewer-buffer lines, and a `status:` line every
 10 minutes with a reserve around 15-25 s and few errors. **Look closer** if you see `reserve empty`
@@ -1962,7 +1962,7 @@ wcur=cur
 def status(h0):
  try:
   fl_=feeds(True) if chid.isdigit() else [src];ks=hc.get("ks")
-  log("status: stream %s of %d, reserve %.0fs, client lead %.0fs, extra lead for shared viewers %.0fs, last 10 min: %d stream errors, %d remuxes, %d failovers, %.0fs keepalive%s"%(str(fl_.index(wcur)+1) if wcur in fl_ else "?",len(fl_),Qs[0],max(wlead,0.0),xb,hc["r"]-h0["r"],hc["x"]-h0["x"],hc["f"]-h0["f"],hc["k"]-h0["k"],", keepalive running for %.0fs"%(mono()-ks) if ks else ""))
+  log("status: stream %s of %d, reserve %.0fs, client lead %.0fs, extra lead for shared viewers %.0fs, last 10 min: %d stream retries, %d remuxes, %d failovers, %.0fs keepalive%s"%(str(fl_.index(wcur)+1) if wcur in fl_ else "?",len(fl_),Qs[0],max(wlead,0.0),xb,hc["r"]-h0["r"],hc["x"]-h0["x"],hc["f"]-h0["f"],hc["k"]-h0["k"],", keepalive running for %.0fs"%(mono()-ks) if ks else ""))
  except Exception:pass
 def beat():
  n=0;h0=dict(hc)
@@ -2270,7 +2270,7 @@ def conn(r):
     if hold[pid] is not None:hold[pid][3]+=p
    else:out+=fix(p)
   if adv>0 and not hc.get("s"):hc["s"]=1;log("input: first video received from %s, building the reserve"%up.urlsplit(cur).netloc)
-  if adv>0 and hc.get("e"):log("input: video back after %d stream errors (reserve %.1fs)"%(hc["e"],Qs[0]));hc["e"]=0
+  if adv>0 and hc.get("e"):log("input: video back after %d reconnects (reserve %.1fs)"%(hc["e"],Qs[0]));hc["e"]=0
   if adv>0:
    got=mono();lv=got;media+=adv;stalled=False;ph=0;gap=None;dlv=True
    if cur in fbad and got-fst>120:fbad.pop(cur,None)
