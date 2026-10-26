@@ -382,6 +382,8 @@ profile exists for providers that don't offer HLS.
 
 Both send **MPEG-TS** to Channels DVR. Only what they read from the provider differs.
 
+Whichever you use, turn on [transcoding](#transcoding-optional) if your hardware allows it.
+
 ### Use an Xtream Codes account
 
 **If your provider offers Xtream Codes (a server address, username and password), add it to
@@ -469,6 +471,11 @@ To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hl
 ## Transcoding (optional)
 
 Both stream profiles can re-encode video instead of passing it through. It's off by default.
+
+**Use transcoding whenever your hardware allows it**, ideally with a GPU (see [Use a GPU](#use-a-gpu)).
+It is the only way the profiles can keep one steady format across backup feeds and refill the
+reserve after a long outage. Without it, there is little more the profiles can do: a backup with
+a different frame rate can upset the player, and a drained reserve only comes back on a retune.
 
 > [!IMPORTANT]
 > **With transcoding on, playback can run 3% slower for a while after a long outage.** If a
