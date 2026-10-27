@@ -428,51 +428,28 @@ An M3U link still works: `output=m3u8` for the HLS profile, `output=ts` for the 
 
 ## Stream profile settings
 
-Both stream profiles read four settings. Set them as **environment variables on the Dispatcharr
-container** (recommended), or fill them in at the top of the pasted profile, above the
-`END OF SETTINGS` line. An environment variable always wins over the same setting in the profile.
-With environment variables, installing a new version of a profile is just paste and save.
+Both stream profiles have a settings block at the top of the pasted text, above the
+`END OF SETTINGS` line. Fill it in before you save the profile in Dispatcharr. Each setting has its
+own section with an explanation, an example, and a `# <-` note saying what to put there.
 
-| Environment variable | Setting in the profile | What to put there | Needed for |
-|---|---|---|---|
-| `DISPATCHARR_API_KEY` | `DISPATCHARR_API_KEY` | Your Dispatcharr API key: **Users**, edit your user, **Generate API Key** | Failover to backup streams, finding the channel in Channels DVR, recording extensions |
-| `CHANNELS_DVR` | `CHANNELS_DVR` | `http://IP:8089` of your Channels DVR server. Optional: if empty, the profile finds the server through Dispatcharr's API | Shared-viewer head start, recording extensions |
-| `CDVR_TRANSCODE` | `TRANSCODE` | `off`, `1080p60`, `1080p30`, `720p60`, `720p30` (or `1080p50`, `1080p25`, `720p50`, `720p25`). See [Transcoding (optional)](#transcoding-optional) | Transcoding |
-| `DISPATCHARR_URL` | `DISPATCHARR_URL` | Leave unset. Defaults to `http://127.0.0.1:9191` (Dispatcharr itself). Only set it if you changed Dispatcharr's web port | Reaching the Dispatcharr API |
+| Setting | What to put there | Needed for |
+|---|---|---|
+| `DISPATCHARR_API_KEY` | Your Dispatcharr API key: **Users**, edit your user, **Generate API Key** | Failover to backup streams, finding the channel in Channels DVR, recording extensions |
+| `CHANNELS_DVR` | `http://IP:8089` of your Channels DVR server. Optional: if empty, the profile finds the server through Dispatcharr's API | Shared-viewer head start, recording extensions |
+| `TRANSCODE` | `off`, `1080p60`, `1080p30`, `720p60`, `720p30` (or `1080p50`, `1080p25`, `720p50`, `720p25`). See [Transcoding (optional)](#transcoding-optional) | Transcoding |
+| `DISPATCHARR_URL` | Leave empty. Defaults to `http://127.0.0.1:9191` (Dispatcharr itself). Only set it if you changed Dispatcharr's web port | Reaching the Dispatcharr API |
 
 > [!IMPORTANT]
-> The API key is an **admin-level** key: anyone who has it can manage Dispatcharr. Keeping it in an
-> environment variable keeps it out of the profile text. To replace it, generate a new key under
-> **Users** and update the variable or setting. When editing the profile's settings block, use
-> double quotes, never single quotes: a single quote breaks the profile.
+> - **Use double quotes, never single quotes.** A single quote breaks the profile.
+> - **The API key is an admin-level key:** anyone who has it can manage Dispatcharr. To replace it,
+>   generate a new key under **Users** and paste it into the profile.
+> - **When you paste a newer version of a profile, copy your settings across** from the old one.
 
 Leave a setting empty and the channel still plays; the features that need it switch off and
-Dispatcharr's log says why (for example `could not read backup streams (DISPATCHARR_API_KEY is not
-set ...)`). The profiles reach Dispatcharr only through its public API with this key
-(`/api/channels/channels/<id>/streams/`, `/api/channels/channels/<id>/`, and
+Dispatcharr's log says why (for example `could not read backup streams (DISPATCHARR_API_KEY is empty
+at the top of the profile)`). The profiles reach Dispatcharr only through its public API with this
+key (`/api/channels/channels/<id>/streams/`, `/api/channels/channels/<id>/`, and
 `/proxy/ts/status/<channel>` when `CHANNELS_DVR` is empty).
-
-**Docker Compose** (under the Dispatcharr service):
-```yaml
-services:
-  dispatcharr:
-    environment:
-      - DISPATCHARR_API_KEY=your-api-key
-      - CHANNELS_DVR=http://192.168.1.50:8089
-      - CDVR_TRANSCODE=1080p60
-```
-
-**`docker run`:** add `-e DISPATCHARR_API_KEY=your-api-key -e CHANNELS_DVR=http://192.168.1.50:8089 -e CDVR_TRANSCODE=1080p60`.
-
-**Unraid:** edit the Dispatcharr container, choose **Add another Path, Port, Variable, Label or
-Device**, set **Config Type** to **Variable**, and add one variable per setting (Key = the variable
-name, Value = your value).
-
-**Debian install** (Dispatcharr's `debian_install.sh`, which runs it as systemd services): run
-`sudo systemctl edit` on the Dispatcharr service, add `[Service]` with one
-`Environment=DISPATCHARR_API_KEY=your-api-key` line per setting, then restart the service.
-
-Recreate or restart Dispatcharr after adding the variables, then retune.
 
 ## Recordings
 
