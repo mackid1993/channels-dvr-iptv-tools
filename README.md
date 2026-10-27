@@ -746,7 +746,7 @@ TRANSCODE="1080p60"
 
 > [!IMPORTANT]
 > **With transcoding on, playback runs 3% slower for a while after a provider problem.** If the
-> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS; not in the first
+> reserve stays below half for 60 seconds (about 30 s on HLS, 10 s on MPEG-TS; not in the first
 > 90 seconds after tuning or switching feeds, and at least a minute after the last change), video
 > and audio play 3% slower together, with the audio pitch unchanged, until the reserve is back to
 > three quarters (about 45 s on HLS, 16 s on MPEG-TS). The rest of the time video plays at its

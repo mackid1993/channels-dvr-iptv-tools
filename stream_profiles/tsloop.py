@@ -35,7 +35,7 @@
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed, except while the reserve refills: if a
-# provider problem keeps the reserve below half for 30 seconds, video and
+# provider problem keeps the reserve below half for 60 seconds, video and
 # audio play 3% slower together (pitch unchanged) until it is back to
 # three quarters. Costs a few seconds more delay
 # and some GPU time. Give the Dispatcharr container a GPU
@@ -217,7 +217,7 @@ def rstep(now, qs, lo, hi, win):
             return
         if lowt is None:
             lowt = now
-        if now - lowt < 30 or now - ltk < 60:
+        if now - lowt < 60 or now - ltk < 60:
             return
         SPD = SLOW
         lowt = None
