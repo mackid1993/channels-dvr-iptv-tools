@@ -4,25 +4,30 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) or
 [m3u-editor](https://github.com/m3ue/m3u-editor):
 
-- **Station ID matcher apps.** Two small desktop apps, one for Dispatcharr and one for m3u-editor,
-  that fill in the **Gracenote station ID** (`tvc-guide-stationid`) on your IPTV channels using the
-  Gracenote data your own Channels DVR server already has access to. Once your channels carry the
-  right station IDs, Channels DVR uses its Gracenote guide for them (two weeks of listings,
-  artwork and logos) instead of your provider's EPG.
-- **Two Dispatcharr stream profiles built specifically for Channels DVR**, one for providers that
-  send **HLS** (recommended) and one for providers that only send **MPEG-TS**. Both hold the
-  buffer inside Dispatcharr, feed Channels DVR at a steady real-time pace, give every device on a
-  shared Channels DVR tuner a head start, and fail over to a channel's backup streams without
-  pausing. They are copied and pasted into Dispatcharr from this README; there is nothing to
-  install. See [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile) to pick one.
-- **A backup streams app** that finds other feeds of each channel and adds them to your Dispatcharr
-  channels as backups in bulk, so the stream profile has somewhere to fail over to.
+- **Station ID matcher apps** (one for Dispatcharr, one for m3u-editor). Small desktop apps that
+  fill in the **Gracenote station ID** (`tvc-guide-stationid`) on your IPTV channels, using the
+  Gracenote data your own Channels DVR server can already access. Channels DVR then uses its
+  Gracenote guide for those channels (two weeks of listings, artwork and logos) instead of your
+  provider's EPG.
+- **Two Dispatcharr stream profiles built for Channels DVR:** one for providers that send **HLS**
+  (recommended), one for providers that only send **MPEG-TS**. Both hold the buffer inside
+  Dispatcharr, feed Channels DVR at a steady real-time pace, give every device on a shared
+  Channels DVR tuner a head start, and fail over to backup streams without pausing. You copy and
+  paste them into Dispatcharr from this README; there is nothing to install. See
+  [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile) to pick one.
+- **A backup streams app** that finds other feeds of each channel and adds them to your
+  Dispatcharr channels as backups in bulk, so the stream profile has somewhere to fail over to.
+
+> [!NOTE]
+> **Quick paths:** [pick a profile](#hls-or-mpeg-ts-profile) ·
+> [install a profile](#install-a-profile) · [update a profile](#update-a-profile) ·
+> [check that it's working](#check-that-its-working) · [troubleshooting](#what-the-profiles-cant-fix)
 
 ## Contents
 
 - [What's in this repository](#whats-in-this-repository)
 - [How it fits together](#how-it-fits-together)
-- [Dispatcharr or m3u-editor?](#dispatcharr-or-m3u-editor)
+  - [Dispatcharr or m3u-editor?](#dispatcharr-or-m3u-editor)
 - [Station ID matcher apps](#station-id-matcher-apps)
   - [What the apps do](#what-the-apps-do)
   - [Features](#features)
@@ -34,35 +39,31 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
   - [Known limitations](#known-limitations)
 - [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile)
   - [Use an Xtream Codes account](#use-an-xtream-codes-account)
-- [Stream profile settings](#stream-profile-settings)
+- [Setting up a stream profile](#setting-up-a-stream-profile)
+  - [Requirements for the profiles](#requirements-for-the-profiles)
+  - [Install a profile](#install-a-profile)
+  - [Stream profile settings](#stream-profile-settings)
+  - [Update a profile](#update-a-profile)
+  - [Turn it on](#turn-it-on)
+  - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
+  - [What the profiles send to Channels DVR](#what-the-profiles-send-to-channels-dvr)
+  - [Check that it's working](#check-that-its-working)
+  - [What the profiles can't fix](#what-the-profiles-cant-fix)
 - [Recordings](#recordings)
-- [Files the profiles write](#files-the-profiles-write)
 - [Transcoding (optional)](#transcoding-optional)
-  - [Why 3%](#why-3)
-  - [Why turn it on](#why-turn-it-on)
-  - [Settings](#settings)
+  - [Transcoding settings](#transcoding-settings)
+  - [Refilling the reserve (3% slower)](#refilling-the-reserve-3-slower)
   - [Use a GPU](#use-a-gpu)
+- [Files the profiles write](#files-the-profiles-write)
 - [HLS stream profile for Dispatcharr and Channels DVR](#hls-stream-profile-for-dispatcharr-and-channels-dvr)
   - [Why](#why)
   - [How it works](#how-it-works)
   - [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step)
-  - [Recordings](#recordings-1)
-  - [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)
-  - [Requirements](#requirements-1)
-  - [What it sends to Channels DVR](#what-it-sends-to-channels-dvr)
-  - [Create the profile](#create-the-profile)
-  - [Turn it on](#turn-it-on)
-  - [Recommended settings](#recommended-settings)
-  - [Check that it's working](#check-that-its-working)
-  - [What it can't fix](#what-it-cant-fix)
-  - [Undo](#undo)
+  - [Provider requirements](#provider-requirements)
   - [HLS profile parameters](#hls-profile-parameters)
 - [MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr)
   - [How it differs from the HLS profile](#how-it-differs-from-the-hls-profile)
-  - [Requirements](#requirements-2)
-  - [Create and turn it on](#create-and-turn-it-on)
-  - [Check that it's working](#check-that-its-working-1)
-  - [What it can't fix](#what-it-cant-fix-1)
+  - [Provider requirements](#provider-requirements-1)
   - [Tested](#tested)
   - [MPEG-TS profile parameters](#mpeg-ts-profile-parameters)
 - [Backup streams app](#backup-streams-app)
@@ -92,8 +93,8 @@ Tools for feeding an IPTV provider into [Channels DVR](https://getchannels.com) 
 | [`stream_profiles/`](stream_profiles) | Readable source of the two stream profiles (`hlsloop.py`, `tsloop.py`). The blocks you paste from this README are generated from these files. | Reading and editing the profiles |
 | [`scripts/`](scripts) | `build-profiles.sh` and `minify_profile.py`, which turn the sources into the pasteable blocks. GitHub Actions runs them on every push and commits the updated README. | Maintainers |
 
-The two station ID apps match channels the same way. They differ only in where the channels come from and
-how the IDs are saved. Use the app for whichever manager you run.
+The two station ID apps match channels the same way. They differ only in where the channels come
+from and how the IDs are saved. Use the app for whichever manager you run.
 
 ## How it fits together
 
@@ -111,11 +112,12 @@ how the IDs are saved. Use the app for whichever manager you run.
  Matcher app  -- reads channels / saves IDs -->  Dispatcharr or m3u-editor
 ```
 
-The matcher apps run on your computer. They talk to your Channels DVR server for Gracenote lineup
-data, and to your Dispatcharr or m3u-editor server for the channel list. Nothing goes anywhere
-else. The stream profile runs inside Dispatcharr and talks to your provider and your Channels DVR server.
+- The **matcher apps** run on your computer. They talk only to your Channels DVR server (for
+  Gracenote lineup data) and your Dispatcharr or m3u-editor server (for the channel list).
+- The **stream profile** runs inside Dispatcharr and talks to your provider and your Channels DVR
+  server.
 
-## Dispatcharr or m3u-editor?
+### Dispatcharr or m3u-editor?
 
 If you already run one, use it; both work with Channels DVR. If you're choosing:
 
@@ -132,57 +134,56 @@ If you already run one, use it; both work with Channels DVR. If you're choosing:
 
 ### What the apps do
 
-1. Read your channels from Dispatcharr, or from one m3u-editor playlist.
-2. Download the real cable, satellite and over-the-air lineups Gracenote lists for the
-   countries and postal codes you choose (through your Channels DVR server) and build a local
-   index of every station in them.
-3. Match each channel against that index and show the results in a table:
-   - **Matched** (green, pre-ticked): exact and unambiguous only. An explicit call sign such as
-     `(WABC)`, or a channel name that equals the Gracenote name after removing words like
-     HD/East/Channel.
-   - **Review** (yellow): several stations share the name, or the name is only similar. Never
-     ticked for you.
-   - **Unmatched** (red): nothing similar in your lineups.
-   - **Current ID not in lineups** (gray): the channel already has an ID that isn't in your
-     cable, satellite or OTA lineups, which is normal for streaming channels. It is left alone and
-     doesn't count as needing attention.
-4. Let you fix the rest by hand: the table starts on **Needs attention**, and each channel shows
-   numbered suggestions.
-5. Save the IDs you ticked after you confirm, then read them back to verify every one.
+1. **Read your channels** from Dispatcharr, or from one m3u-editor playlist.
+2. **Build a station index.** Through your Channels DVR server, download the real cable, satellite
+   and over-the-air lineups Gracenote lists for the countries and postal codes you choose, and
+   index every station in them.
+3. **Match** each channel against that index and show the results in a table:
+
+   | Status | Color | Meaning |
+   |---|---|---|
+   | **Matched** | green, pre-ticked | Exact and unambiguous only: an explicit call sign such as `(WABC)`, or a channel name that equals the Gracenote name after removing words like HD/East/Channel. |
+   | **Review** | yellow | Several stations share the name, or the name is only similar. Never ticked for you. |
+   | **Unmatched** | red | Nothing similar in your lineups. |
+   | **Current ID not in lineups** | gray | The channel already has an ID that isn't in your cable, satellite or OTA lineups (normal for streaming channels). Left alone; doesn't count as needing attention. |
+
+4. **Let you fix the rest by hand.** The table starts on **Needs attention**, and each channel
+   shows numbered suggestions.
+5. **Save** the IDs you ticked after you confirm, then read them back to verify every one.
 
 Fuzzy matches are never saved automatically. Anything uncertain needs your pick.
 
 ### Features
 
-- **Multiple countries at once** (`USA:10001, CAN, GBR:SW1A`), for lists that mix them. Lineups
-  from all of them are merged into one index.
-- **Fast review**: click a channel, then click a station (or press 1-9 to pick it and jump to the
-  next channel). Return moves on without a change. The search box above the station list looks
-  through your lineups, or all of Gracenote, and you can also type an ID. Stations outside your
-  lineups can be picked like any other.
+- **Multiple countries at once** (`USA:10001, CAN, GBR:SW1A`) for mixed lists. Lineups from all of
+  them are merged into one index.
+- **Fast review:** click a channel, then a station (or press 1-9 to pick it and jump to the next
+  channel). Return moves on without a change. The search box above the station list searches your
+  lineups or all of Gracenote, and also accepts a typed ID. Stations outside your lineups can be
+  picked like any other.
 - **Word-order independent matching** that handles names like "Nat Geo Wild HD", "C-SPAN 2",
   "QVC 2", run-together names like "SHOXBET", and provider prefixes like `US|`.
 - **Gracenote-wide search** when nothing in your lineups is a good match, clearly labeled
   "not in your lineups".
-- **Fix or remove existing IDs**: channels that already have an ID are included, a different pick
+- **Fix or remove existing IDs:** channels that already have an ID are included. A different pick
   shows as "Will replace ID", and **Remove ID** clears one. The confirmation lists every
   replacement and removal.
-- **Bulk changes**: Shift-click or Cmd/Ctrl-click several channels, then **Tick selected**,
+- **Bulk changes:** Shift-click or Cmd/Ctrl-click several channels, then **Tick selected**,
   **Untick selected** or **Mark reviewed**. Right-click a channel for more actions.
 - **Filters** with live counts (Needs attention, Ticked, Left as is and every status), a group
   dropdown, a Find box (name, ID, group, or a channel-number range like `500-600`) and sortable
   columns. Columns can be dragged as wide as you like.
-- **Your work is autosaved** and offered back after a restart or crash.
-- **Your servers and API key are remembered** between runs, and the app connects by itself at
-  launch when they are complete (see [Where data is stored](#where-data-is-stored)).
+- **Autosave:** your work is offered back after a restart or crash.
+- **Remembers your servers and API key** between runs, and connects by itself at launch when they
+  are complete (see [Where data is stored](#where-data-is-stored)).
 - **Cancel button**, clear error messages for wrong addresses or credentials, and a log file.
 - **CSV export** of whatever is still unmatched.
 
 ### Requirements
 
 - **Python 3.8 or newer.**
-- **Tk (tkinter)** for the window. It is part of Python's standard library but is often a
-  separate install:
+- **Tk (tkinter)** for the window. It is part of Python's standard library but is often a separate
+  install. To check, run `python3 -c "import tkinter"`; it should print nothing.
 
   | Platform | Install Tk |
   |---|---|
@@ -194,18 +195,17 @@ Fuzzy matches are never saved automatically. Anything uncertain needs your pick.
   | Arch | `sudo pacman -S tk` |
   | openSUSE | `sudo zypper install python3-tk` |
 
-  To check, run `python3 -c "import tkinter"`. It should print nothing.
 - A Channels DVR server you can reach on your network.
 - **Dispatcharr app:** a Dispatcharr instance and an admin account or API key.
-- **m3u-editor app:** m3u-editor 0.13 or newer, an admin account (to install the plugin once)
-  and an API token.
+- **m3u-editor app:** m3u-editor 0.13 or newer, an admin account (to install the plugin once) and
+  an API token.
 
 Nothing else is needed: no `pip install` and no other packages.
 
-When an app starts it checks for Tk. If it is missing it offers to install it with the commands
-above (Homebrew, winget, apt, dnf, pacman or zypper), or switches to another Python on the
-machine that already has it. To only see what it would do, add `--check-deps`; add `--yes` to
-install without being asked.
+At startup each app checks for Tk. If it is missing, the app offers to install it with the
+commands above (Homebrew, winget, apt, dnf, pacman or zypper), or switches to another Python on the
+machine that already has it. Add `--check-deps` to only see what it would do, or `--yes` to install
+without being asked.
 
 ### Running an app
 
@@ -219,10 +219,14 @@ py dispatcharr_stationid_matcher.py
 py m3u_editor_stationid_matcher.py
 ```
 
-In both apps, enter your **Channels DVR** address (e.g. `192.168.1.10`; port 8089 is assumed) and
-your **countries** with a postal code, e.g. `USA:10001`, or use **Pick…**. The postal code
-decides which local stations count, so use your own area's. The first run for a country takes
-about a minute while lineups are read; after that they are cached for 7 days.
+In both apps, enter:
+
+- your **Channels DVR** address (e.g. `192.168.1.10`; port 8089 is assumed)
+- your **countries** with a postal code (e.g. `USA:10001`), or use **Pick…**. The postal code
+  decides which local stations count, so use your own area's.
+
+The first run for a country takes about a minute while lineups are read. After that they are
+cached for 7 days.
 
 ### Using the Dispatcharr app
 
@@ -234,8 +238,8 @@ about a minute while lineups are read; after that they are cached for 7 days.
 #### Match and write
 
 1. Run `dispatcharr_stationid_matcher.py`.
-2. Enter the **Dispatcharr** address (port 9191 is assumed) and the **API key**, or a username
-   and password.
+2. Enter the **Dispatcharr** address (port 9191 is assumed) and the **API key**, or a username and
+   password.
 3. Press **Connect & Match**. Once connected, the form folds into a one-line bar with
    **Connection…** and **Reload**.
 4. Work through **Needs attention**: pick a station for each channel (click, or 1-9 to pick and
@@ -243,10 +247,12 @@ about a minute while lineups are read; after that they are cached for 7 days.
    one.
 5. Press **Write N channels to Dispatcharr…** (Cmd/Ctrl-S) and confirm.
 
-For channels Dispatcharr created from an M3U (auto-sync), the station ID is written as a channel
-**override**; otherwise the next M3U refresh would overwrite it with whatever the provider sends.
-Removing an ID on such a channel writes a blank override. Manually created channels get the
-normal field.
+How the ID is written:
+
+- **Channels Dispatcharr created from an M3U (auto-sync):** written as a channel **override**,
+  because otherwise the next M3U refresh would overwrite it with whatever the provider sends.
+  Removing an ID on such a channel writes a blank override.
+- **Manually created channels:** the normal field.
 
 Point Channels DVR at Dispatcharr's M3U output; Dispatcharr includes `tvc-guide-stationid` there
 automatically.
@@ -256,19 +262,20 @@ automatically.
 #### Why there is a plugin
 
 m3u-editor's API can list channels but cannot set a station ID, and plugin actions can only be
-started from its web page. So the app ships a small m3u-editor plugin, **Gracenote Station IDs**,
-inside the script, and you install it once. The plugin has one action, **Apply Station IDs**:
-you pick the playlist and paste the lines the app copied (`channel_id=station_id`; an empty ID
-removes it). It:
+started from its web page. So the app carries a small m3u-editor plugin, **Gracenote Station IDs**,
+inside the script, and you install it once.
 
-- rejects the whole paste if any line is malformed or a channel is listed twice with different
-  IDs, so nothing is half-applied
+The plugin has one action, **Apply Station IDs**: you pick the playlist and paste the lines the app
+copied (`channel_id=station_id`; an empty ID removes it). It:
+
+- rejects the whole paste if any line is malformed or a channel is listed twice with different IDs,
+  so nothing is half-applied
 - only touches channels that belong to the playlist you pick
 - reads every value back before reporting success, and lists any channel it skipped
 
-m3u-editor keeps station IDs when it re-syncs the playlist from your provider, so they only need
-to be applied once. Its playlist output includes them as `tvc-guide-stationid`. The plugin's
-source is in [`plugin/`](plugin) if you want to read it before installing.
+m3u-editor keeps station IDs when it re-syncs the playlist from your provider, so they only need to
+be applied once. Its playlist output includes them as `tvc-guide-stationid`. The plugin's source is
+in [`plugin/`](plugin) if you want to read it before installing.
 
 #### Install the plugin (once)
 
@@ -280,22 +287,23 @@ source is in [`plugin/`](plugin) if you want to read it before installing.
 
 A newer version installs the same way and replaces the old one.
 
-If you also have m3u-editor's built-in **Channels DVR** plugin enabled, turn it off or turn off
-its **Overwrite existing** setting. It runs after every playlist sync and can replace the IDs you
-applied.
+> [!IMPORTANT]
+> If m3u-editor's built-in **Channels DVR** plugin is enabled, turn it off or turn off its
+> **Overwrite existing** setting. It runs after every playlist sync and can replace the IDs you
+> applied.
 
 #### Get an m3u-editor API token
 
 1. In m3u-editor, open **Tools > API Tokens** and create a token.
-2. Give it the **View** permission (that's all the app needs) and copy it. m3u-editor shows the
-   token only once.
+2. Give it the **View** permission (all the app needs) and copy it. m3u-editor shows the token only
+   once.
 
 #### Match and apply
 
-1. Paste the **m3u-editor playlist URL**: the same `http://<host>:36400/<id>/playlist.m3u` URL
-   you gave Channels DVR. Use the playlist that imports from your provider, because station IDs
-   live on its channels. Custom and merged playlists are refused; they pick up the IDs from that
-   playlist automatically.
+1. Paste the **m3u-editor playlist URL**: the same `http://<host>:36400/<id>/playlist.m3u` URL you
+   gave Channels DVR. Use the playlist that imports from your provider, because station IDs live on
+   its channels. Custom and merged playlists are refused; they pick up the IDs from that playlist
+   automatically.
 2. Paste the **API token** and press **Connect & Match**.
 3. Work through **Needs attention** (click a station, or 1-9 to pick and move on), or use
    **Match unmatched one by one…** for a guided pass. Then press **Copy N IDs for m3u-editor…**
@@ -307,8 +315,8 @@ applied.
    applied yet stays ticked.
 
 The app reads each channel's current station ID from the playlist output, because the API doesn't
-return it. A channel hidden from the output (for example disabled) shows no current ID; the status
-line says when that happens. Picking an ID for it still works.
+return it. A channel hidden from the output (for example disabled) shows no current ID, and the
+status line says so. Picking an ID for it still works.
 
 #### Channels DVR source settings for m3u-editor
 
@@ -326,10 +334,9 @@ Each app keeps its own folder in your home directory:
 | Dispatcharr | `~/.dispatcharr_stationid_matcher/` (Windows: `%USERPROFILE%\.dispatcharr_stationid_matcher\`) |
 | m3u-editor | `~/.m3u_editor_stationid_matcher/` (Windows: `%USERPROFILE%\.m3u_editor_stationid_matcher\`) |
 
-The folder name starts with a dot, so it is hidden by default on macOS and Linux. Open it with
-`open ~/.<folder>` (macOS) or `xdg-open ~/.<folder>` (Linux), or press Cmd-Shift-. in Finder. On
-Windows, paste the path into Explorer's address bar. **File > Open log** opens the log
-directly.
+The folder name starts with a dot, so macOS and Linux hide it by default. To open it:
+`open ~/.<folder>` (macOS), `xdg-open ~/.<folder>` (Linux), Cmd-Shift-. in Finder, or paste the
+path into Explorer's address bar (Windows). **File > Open log** opens the log directly.
 
 | File | Contents |
 |---|---|
@@ -340,34 +347,36 @@ directly.
 | `index_<COUNTRY><POSTAL>.json` | Cached lineup data, refreshed after 7 days. |
 | `logs/matcher.log` | Rotating log. Passwords, API keys and tokens are never logged. |
 
-The API key or token is saved so you don't have to paste it every time. To make the app forget
-it, delete `settings.json` while the app is closed. Deleting the whole folder resets the app;
-nothing in Dispatcharr or m3u-editor is affected.
+The API key or token is saved so you don't have to paste it every time. To make the app forget it,
+delete `settings.json` while the app is closed. Deleting the whole folder resets the app; nothing in
+Dispatcharr or m3u-editor is affected.
 
 ### Known limitations
 
-- Gracenote only returns lineups for about 36 countries (the Americas, most of Western and
-  Northern Europe, Australia and South Korea). Other countries can still be entered; their
-  channels only get Gracenote-wide suggestions.
-- An unknown postal code doesn't produce an error from Gracenote; it returns only nationwide
-  satellite lineups. The app warns when that happens.
-- Some channels have no Gracenote station of their own (for example per-team sports feeds), so
-  they stay unmatched or need a hand-picked ID.
-- m3u-editor app: IDs are applied by pasting into the plugin's action, because m3u-editor has
-  no API for it and plugin actions can only be started from its web page.
+- Gracenote only returns lineups for about 36 countries (the Americas, most of Western and Northern
+  Europe, Australia and South Korea). Other countries can still be entered; their channels only get
+  Gracenote-wide suggestions.
+- Gracenote doesn't report an unknown postal code as an error; it returns only nationwide satellite
+  lineups. The app warns when that happens.
+- Some channels have no Gracenote station of their own (for example per-team sports feeds), so they
+  stay unmatched or need a hand-picked ID.
+- m3u-editor app: IDs are applied by pasting into the plugin's action, because m3u-editor has no API
+  for it and plugin actions can only be started from its web page.
 
 ## HLS or MPEG-TS profile?
 
-Xtream-style providers usually offer each channel two ways. Which one your provider sends decides
-which profile you can use:
+Xtream-style providers usually offer each channel two ways, and which one your provider sends
+decides which profile you can use:
 
-- **HLS** (`.m3u8`): the provider publishes a playlist of short video files (segments, usually
-  10 seconds each) and keeps about the last minute of them available.
-- **MPEG-TS** (`.ts`): the provider sends one continuous stream over a single connection, starting
-  from a short burst of recent video.
+- **HLS** (`.m3u8`): a playlist of short video files (segments, usually 10 seconds each), with
+  about the last minute of them kept available.
+- **MPEG-TS** (`.ts`): one continuous stream over a single connection, starting with a short burst
+  of recent video.
 
 **Use the HLS profile if your provider offers HLS. It is the recommended profile.** The MPEG-TS
-profile exists for providers that don't offer HLS.
+profile exists for providers that don't. Both send **MPEG-TS** to Channels DVR; only what they read
+from the provider differs. Whichever you use, turn on [transcoding](#transcoding-optional) if your
+hardware allows it.
 
 | | HLS profile (recommended) | MPEG-TS profile (fallback) |
 |---|---|---|
@@ -384,53 +393,94 @@ profile exists for providers that don't offer HLS.
 | Recordings extended past the scheduled end | about 105 s (delay + 45 s), on top of your padding | about 65-80 s, on top of your padding |
 | Log prefix | `[hlsloop stream]` | `[tsloop stream]` |
 
-Both send **MPEG-TS** to Channels DVR. Only what they read from the provider differs.
-
-Whichever you use, turn on [transcoding](#transcoding-optional) if your hardware allows it.
-
 ### Use an Xtream Codes account
 
 **If your provider offers Xtream Codes (a server address, username and password), add it to
 Dispatcharr as an Xtream Codes account rather than an M3U link.** It's the better choice with both
 profiles:
 
-- **Faster and more reliable channel lists.** Xtream Codes loads the channel list from
-  `player_api.php`, which is usually far quicker than an M3U download. Dispatcharr gives up on an
-  M3U download that sends nothing for 60 seconds, and some providers' `get.php` takes longer than
-  that to build the list, so the refresh fails every time.
+- **Faster, more reliable channel lists.** Xtream Codes loads the list from `player_api.php`,
+  usually far quicker than an M3U download. Dispatcharr gives up on an M3U download that sends
+  nothing for 60 seconds, and some providers' `get.php` takes longer than that to build the list,
+  so the refresh fails every time.
 - **Both profiles handle it properly.** You don't need an HLS option in the provider's settings or
   an `output=` parameter.
 
-On Xtream-style providers every live channel is available as HLS and as MPEG-TS at the same address,
-differing only in the ending:
+**Setting it up:** in Dispatcharr add an M3U account of type **Xtream Codes**, with the server
+address only (`http://provider`) and the username and password in their own fields (make sure
+they are the same line's pair). An M3U link still works: `output=m3u8` for the HLS profile,
+`output=ts` for the MPEG-TS profile.
+
+On Xtream-style providers every live channel is available as HLS and as MPEG-TS at the same
+address, differing only in the ending:
 
 ```
 http://provider/live/<user>/<pass>/<id>.m3u8   (HLS)
 http://provider/live/<user>/<pass>/<id>.ts     (MPEG-TS)
 ```
 
-Dispatcharr stores every stream of an Xtream Codes account with the `.ts` ending, and has no
-setting to change that. That's fine:
+Dispatcharr stores every stream of an Xtream Codes account with the `.ts` ending and has no setting
+to change that. That's fine:
 
-- **HLS profile:** it switches each `.ts` Xtream address to its `.m3u8` form before connecting
-  (logging `input: provider stream URL is MPEG-TS; using its HLS form` once per tune). It does the
-  same for every backup stream and after a Dispatcharr restart. So you get HLS from an Xtream Codes
-  account even though Dispatcharr has no HLS option for it. Addresses that are already `.m3u8` are
-  left exactly as they are, and only `/live/<user>/<pass>/<number>.ts` addresses are touched.
-- **MPEG-TS profile:** it reads the `.ts` addresses as they are. An `.m3u8` address is refused
-  with `this stream URL is HLS; use the HLS profile for it`.
+- **HLS profile:** switches each `.ts` Xtream address to its `.m3u8` form before connecting
+  (logging `input: provider stream URL is MPEG-TS; using its HLS form` once per tune), for every
+  backup stream too and after a Dispatcharr restart. So you get HLS from an Xtream Codes account
+  even though Dispatcharr has no HLS option for it. Only `/live/<user>/<pass>/<number>.ts`
+  addresses are touched; addresses that are already `.m3u8` are left exactly as they are.
+- **MPEG-TS profile:** reads the `.ts` addresses as they are. An `.m3u8` address is refused with
+  `this stream URL is HLS; use the HLS profile for it`.
 
-**Setting it up:** in Dispatcharr add an M3U account of type **Xtream Codes**, with the server
-address only (`http://provider`) and the username and password in their own fields (make sure
-they are the same line's pair).
+## Setting up a stream profile
 
-An M3U link still works: `output=m3u8` for the HLS profile, `output=ts` for the MPEG-TS profile.
+Both profiles are set up the same way. They are **built specifically for Channels DVR watching
+through Dispatcharr**: each works out which Channels DVR channel a stream is, asks Channels DVR how
+many devices are watching, and sizes the buffer for that. Other players still get a steady stream,
+but the viewer buffer only works with Channels DVR. If you don't use Channels DVR, use one of
+Dispatcharr's built-in profiles.
 
-## Stream profile settings
+### Requirements for the profiles
 
-Both stream profiles have a settings block at the top of the pasted text, above the
-`END OF SETTINGS` line. Fill it in before you save the profile in Dispatcharr. Each setting has its
-own section with an explanation, an example, and a `# <-` note saying what to put there.
+- **Channels DVR**, with Dispatcharr added as a **Custom Channels** M3U source using Dispatcharr's
+  M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**, with
+  Dispatcharr's output format left on **MPEG-TS** (see [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)).
+  Dispatcharr must be able to reach the Channels DVR server on port 8089.
+- **Dispatcharr 0.32 or newer** (tested on 0.33.0). The profiles use Python, the `requests`
+  module and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is installed. They read each
+  channel's UUID and backup streams through Dispatcharr's public API, using the API key in their
+  settings (see [Stream profile settings](#stream-profile-settings)).
+- **The right provider format** for the profile you pick: see the HLS profile's
+  [provider requirements](#provider-requirements) or the MPEG-TS profile's
+  [provider requirements](#provider-requirements-1).
+
+### Install a profile
+
+1. In Dispatcharr, open **Settings > Stream Profiles** and press **Add Stream Profile**.
+2. **Name:** anything you like, for example `Channels DVR HLS` or `Channels DVR TS`.
+3. **Command:** type exactly:
+
+   ```
+   python
+   ```
+
+4. **Parameters:** each profile comes in two parts, under
+   [HLS profile parameters](#hls-profile-parameters) or
+   [MPEG-TS profile parameters](#mpeg-ts-profile-parameters). On GitHub, use the copy button in each
+   block's top-right corner.
+   - **Part 1, settings:** paste it into the Parameters box and fill in the settings at the bottom
+     of it (see [Stream profile settings](#stream-profile-settings)). It starts with `-u -c '`. You
+     only do this once.
+   - **Part 2, code:** paste it directly below part 1, in the same box. It ends with
+     `' {streamUrl} {userAgent} {channelId}`.
+   - Don't edit part 2, don't join its lines, and don't add or remove quotes. The program is
+     wrapped in single quotes and contains none itself, which is what lets it sit in the
+     Parameters box safely. In the settings, use double quotes only.
+5. Press **Save**.
+
+### Stream profile settings
+
+The settings block is part 1, above the `END OF SETTINGS` line. Fill it in before you save the
+profile. Each setting has its own section with an explanation, an example, and a `# <-` note saying
+what to put there.
 
 | Setting | What to put there | Needed for |
 |---|---|---|
@@ -443,389 +493,55 @@ own section with an explanation, an example, and a `# <-` note saying what to pu
 > - **Use double quotes, never single quotes.** A single quote breaks the profile.
 > - **The API key is an admin-level key:** anyone who has it can manage Dispatcharr. To replace it,
 >   generate a new key under **Users** and paste it into the profile.
-> - **To update a profile, replace only part 2** (everything below the `END OF SETTINGS` line);
->   your settings in part 1 stay as they are.
 
 Leave a setting empty and the channel still plays; the features that need it switch off and
 Dispatcharr's log says why (for example `could not read backup streams (DISPATCHARR_API_KEY is empty
 at the top of the profile)`). The profiles reach Dispatcharr only through its public API with this
 key (`/api/channels/channels/<id>/streams/` and `/api/channels/channels/<id>/`).
 
-## Recordings
+### Update a profile
 
-Both profiles run a little behind the provider's live edge: that's the reserve that rides out late
-or missing video (about 60 s for HLS, about 20 s for MPEG-TS). Channels DVR starts and stops
-recordings by the clock, so without help the last minute of a program would still be inside the
-profile when Channels DVR stops recording, and the ending would be cut off.
+Open the profile in Dispatcharr, keep everything down to the `END OF SETTINGS` line, delete
+everything below it, paste the new part 2 in its place, and save. Your settings in part 1 stay as
+they are. Retune for the new version to take effect.
 
-The profiles handle this for you:
+### Turn it on
 
-- **They extend the recording in Channels DVR.** While a recording is running on a channel using
-  the profile, the profile lengthens that recording (the same as editing its end time in Channels
-  DVR) by the profile's own measured delay **plus 45 seconds** for the provider itself running
-  behind the broadcast (IPTV providers usually run about 20-40 s behind). That's about 105 s past
-  the end for HLS and about 65-80 s for MPEG-TS, never more than 3 minutes.
-- **Your padding is kept.** The extension is added **on top of** whatever end padding the recording
-  or its pass already has. If you record a show 30 minutes late because a game runs before it, it
-  still gets its 30 minutes, plus the extension.
-- **Only recordings made through this profile.** The profile asks Channels DVR which recordings are
-  using this exact source and channel. Recordings Channels DVR makes from any other source (an
-  antenna, another provider, a TV Everywhere source) are never touched, even if they list the same
-  channel.
-- **Once per recording.** Each recording's original length is saved in Dispatcharr's `/data`
-  folder, so restarting Dispatcharr or its container mid-recording doesn't add the extension twice.
-  See [Files the profiles write](#files-the-profiles-write).
-- **Watching and recording at the same time is fine.** The stream itself is never changed for a
-  recording, so a live viewer on the same channel sees nothing different.
+- **For all channels:** **Settings > Stream Settings > Default Stream Profile**, choose the
+  profile, and save. Channels that have their own stream profile set keep it.
+- **For one channel:** edit the channel and set **Stream Profile** to the profile.
 
-In Dispatcharr's log the profile reports it as `recording: <show> on ch N extended by Ns on top of
-its own padding (...)`. Channels DVR shows the later end time on the recording.
+A profile only applies to streams that start after you save. To switch a channel that is already
+playing, change to another channel in Channels DVR, wait about 10 seconds so Dispatcharr stops the
+old stream, then tune back.
 
-What it can't cover: if your provider runs more than about 45 seconds behind the broadcast, add a
-little end padding for those channels yourself.
+**Recommended settings:**
 
-## Files the profiles write
+- **Dispatcharr:** **Settings > Proxy Settings > Buffering Timeout** of at least **30** seconds, so
+  Dispatcharr's own stream switching doesn't step in before the profile's failover.
+- **Channels DVR:** keep **tuner sharing** on. The profiles are built around it.
 
-Both profiles keep a few small files inside the Dispatcharr container. Nothing else is
-written, and nothing is written outside the container.
-
-| File | Where | What's in it | Why | Cleanup |
-|---|---|---|---|---|
-| `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
-| `hlsloop-hw.txt`, `tsloop-hw.txt` | `/tmp` | The encoder transcoding picked (`vaapi`, `nvenc` or `cpu`). A few bytes. | So the encoder test runs once, not on every tune. Only written with transcoding on. | Re-checked when it is more than an hour old; `/tmp` is cleared whenever the Dispatcharr container restarts. |
-| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the new copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten continuously while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
-
-To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-* /tmp/tsloop-*`
-inside the container) while nothing is playing.
-
-## Transcoding (optional)
-
-Both stream profiles can re-encode video instead of passing it through. It's off by default.
-
-**Use transcoding whenever your hardware allows it**, ideally with a GPU (see [Use a GPU](#use-a-gpu)).
-It is the only way the profiles can keep one steady format across backup feeds and refill the
-reserve after a long outage. Without it, there is little more the profiles can do: a backup with
-a different frame rate can upset the player, and a drained reserve only comes back on a retune
-(the MPEG-TS profile can also top it up by reconnecting for a fresh burst when the provider drifts behind).
-
-> [!IMPORTANT]
-> **With transcoding on, playback runs 3% slower for a while after a provider problem.** If the
-> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS; not in the first
-> 90 seconds after tuning or switching feeds, and at least a minute after the last change), video and audio
-> play 3% slower together, with the audio pitch unchanged, until the reserve is back to three
-> quarters (about 45 s on HLS, 16 s on MPEG-TS). The rest of the time video plays at its real speed.
->
-> - **Two clean switches per refill.** The encoder is restarted once when the slowdown starts and
->   once when it ends, with the speed set from the first frame. Nothing is changed in a running
->   encoder, so audio and video can't drift apart. Each restart waits up to 10 seconds for the
->   next keyframe (then restarts anyway), keeps the output timeline continuous and corrects for
->   where the audio sits in the stream, so the picture doesn't pause. On HLS the new encoder's
->   start is worked out from the timestamps already fed in, so this works whether or not the
->   provider's segments start on keyframes.
-> - **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 17 minutes on
->   HLS (up to about 26 minutes from empty) and 3 to 5 minutes on MPEG-TS.
-> - **What you might see:** while it runs, a 60 fps source repeats one frame about twice a second.
->   On a smooth, fast camera pan that can show as a tiny hitch.
-> - **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would
->   mean stretching its timestamps, which causes crackle or drift. Without transcoding the HLS
->   reserve only comes back on a retune, and the MPEG-TS reserve only through a fresh connection's
->   burst.
->
-> See [Why 3%](#why-3) for the research behind the rate.
-
-### Why 3%
-
-The rate is a trade-off between refilling quickly and staying below what people can notice.
-
-- **Motion.** In lab experiments, people comparing two moving patterns side by side can just tell
-  speeds apart when they differ by roughly 5 to 10% (McKee, 1981; De Bruyn and Orban, 1988).
-  That's the best case: ideal conditions and direct comparison. Judging one speed on its own, as
-  a TV viewer does, is harder. 3% sits below the best-case threshold.
-- **Speech.** Listeners notice a change in speaking tempo at about 5%, and slowdowns are harder to
-  notice than speedups (Quene, 2007). Pitch is corrected, so voices don't drop in pitch.
-- **Broadcast precedent.** For decades, 50 Hz countries played 24 fps films at 25 fps, which is
-  4.2% faster, to hundreds of millions of viewers. The faster motion went largely unnoticed; the
-  raised pitch was what people noticed, and pitch-corrected versions drew few complaints.
-  Broadcast profanity-delay units such as Eventide's BD600 rebuild their delay the same way, at a
-  rate their maker describes as subtle and transparent.
-- **Where it can show.** Music is less forgiving: tempo changes of around 3% can be noticed, and
-  trained musicians notice smaller changes than other listeners. A second screen showing the same channel in real time will
-  drift away by about 1.8 s a minute. And someone who knows the slowdown is on and is watching for
-  it may believe they see it; the fair test is a blind comparison.
-
-3% stays under the motion and speech thresholds and under both broadcast precedents, and it
-refills quickly enough that a refill is usually over in under 20 minutes. The figures above come from the cited
-studies and are approximate.
-
-### Why turn it on
-
-Every feed leaves Dispatcharr in the same format, so a failover to a backup with a different frame
-rate or resolution doesn't make Channels DVR (Apple TV in particular) drop frames or drift the
-audio. It also lets the reserve refill itself after a long outage (see the note above).
-
-The costs: GPU (or CPU) time, a little picture quality, and a few seconds more delay behind live.
-
-### Settings
-
-At the very top of the profile code, set one line:
-
-```
-TRANSCODE="1080p60"
-```
-
-| Setting | Output | Bitrate |
-|---|---|---|
-| `"off"` | passed through untouched (default) | as the provider sends it |
-| `"1080p60"` | 1080p, 59.94 fps | 6 Mbps |
-| `"1080p30"` | 1080p, 29.97 fps | 4.5 Mbps |
-| `"720p60"` | 720p, 59.94 fps | 4.5 Mbps |
-| `"720p30"` | 720p, 29.97 fps | 3 Mbps |
-| `"1080p50"`, `"1080p25"`, `"720p50"`, `"720p25"` | the same for 50 Hz countries | |
-
-**Which frame rate?** Pick the highest one your channels use. 60 suits sports, news and most US
-broadcast channels; a 30 fps channel just shows each frame twice, so nothing is lost. 30 is fine
-for mostly movies and entertainment and is easier on weak hardware, but 60 fps sports will look
-choppier. In 50 Hz countries (Europe, the UK, Australia and others) use 50 or 25 instead, since
-60 or 30 there makes motion judder.
-
-**Which size?** 1080p with a GPU, 720p on weak hardware or when encoding on the CPU. The bitrates
-match what IPTV providers typically send, so quality holds without making the stream bigger.
-
-Audio is always stereo AAC at 48 kHz. An unknown setting counts as `"off"`.
-
-### Use a GPU
-
-Encoding 1080p60 video on the CPU takes most of a modern core per stream, and small machines
-(Intel N100s, many NAS boxes, ARM) can't keep up at all. A GPU does the encoding in dedicated
-hardware: on an Intel iGPU a stream costs roughly a third of one CPU core, mostly for decoding and
-scaling.
-
-The profile picks an encoder on its own the first time it transcodes and logs which one it used:
-
-1. **Intel Quick Sync or AMD** (VAAPI), if `/dev/dri/renderD128` exists in the container.
-2. **NVIDIA** (NVENC), if the NVIDIA runtime is available.
-3. **The CPU** (`libx264`), otherwise. Use a 720p setting if you have to run here.
-
-Dispatcharr's image already includes all three encoders. The container just needs access to the
-GPU:
-
-**Intel or AMD, Docker Compose:**
-```yaml
-services:
-  dispatcharr:
-    devices:
-      - /dev/dri:/dev/dri
-```
-
-**Intel or AMD, `docker run`:** add `--device /dev/dri:/dev/dri`.
-
-**Intel or AMD, Unraid template:** add `--device=/dev/dri` to **Extra Parameters**.
-
-**NVIDIA** needs the NVIDIA driver on the host plus the NVIDIA Container Toolkit (on Unraid, the
-**Nvidia Driver** plugin provides both).
-
-**NVIDIA, Docker Compose:**
-```yaml
-services:
-  dispatcharr:
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=all
-```
-(Newer Compose versions also accept `deploy: resources: reservations: devices:` with
-`driver: nvidia` and `capabilities: [gpu]` instead of `runtime: nvidia`.)
-
-**NVIDIA, `docker run`:** add `--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`
-(or `--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all`).
-
-**NVIDIA, Unraid template:** add `--runtime=nvidia` to **Extra Parameters**, then add two
-variables: `NVIDIA_VISIBLE_DEVICES` set to `all` (or the GPU UUID shown on the Nvidia Driver
-plugin page) and `NVIDIA_DRIVER_CAPABILITIES` set to `all`.
-
-Recreate the container after the change. To check it, tune a channel and look for
-`transcoding with Intel/AMD graphics (VAAPI)` or `transcoding with NVIDIA graphics (NVENC)` in
-Dispatcharr's log. `transcoding with the CPU` means the container can't see the GPU.
-
-## HLS stream profile for Dispatcharr and Channels DVR
-
-This is the **HLS profile** (recommended). For providers that only send MPEG-TS, see
-[MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr).
-
-**This profile is built specifically for Channels DVR watching through Dispatcharr.** It works out
-which Channels DVR channel each stream is, asks Channels DVR how many devices are watching it, and
-sizes the buffer for that. Other players still get a steady stream, but the viewer buffer only
-works with Channels DVR. If you don't use Channels DVR, use one of Dispatcharr's built-in profiles.
-
-### Why
-
-IPTV providers that serve HLS (`.m3u8`) publish live video as a stream of short segments. Now
-and then a segment arrives late, the provider stalls, refuses a request, restarts the channel, or
-replaces a dead channel with a black "offline" placeholder. Dispatcharr's built-in stream profiles
-start playback right at the live edge and give up after three quick reconnects, so those problems
-show up in Channels DVR as buffering, a black screen or a dropped channel.
-
-Channels DVR also shares one tuner between every device watching the same channel. A device that
-joins later starts at the newest video Channels DVR has, so a cushion built up in the first
-player doesn't help the second one.
-
-### How it works
-
-The profile replaces Dispatcharr's stream fetcher with a small Python program that runs inside
-Dispatcharr. It holds the cushion itself and feeds Channels DVR at a steady pace, the way an HDMI
-encoder does:
-
-- **The reserve lives in the profile, not in the players.** It joins up to about 60 seconds
-  back in the provider's playlist (at least 3 segments, or the whole playlist if it's shorter) and
-  keeps almost all of it as a private reserve. When the provider publishes late, the reserve keeps video flowing to
-  every device at once. When the provider catches up, the reserve refills at download speed.
-- **Paced by video timestamps.** Video leaves the profile at exactly real time, timed by each
-  frame's timestamp rather than by bytes, so players receive it smoothly and every device on a
-  shared tuner gets the same stream.
-- **A small head start for the players, sized for Channels DVR.** One viewer gets about 4 seconds
-  ahead (more on low-bitrate channels, so Dispatcharr's ~256 KB chunks never leave the player
-  short). Every time another Channels DVR device joins the channel, including one rejoining
-  after another left, the profile sends a 5-second head start out of its reserve. Channels DVR
-  shares one connection per tuner, so every device on it gets the extra cushion, and a device
-  that joins late doesn't start empty. A device leaving never takes the cushion back, so the
-  others never drain.
-- **The reserve has a floor and rebuilds itself.** Head starts stop once the reserve is down to
-  about 20 seconds, so late segments from the provider are always covered (a device joining at
-  the floor gets only its own startup buffer). When no device has joined for 2 minutes and the
-  reserve is under 30 seconds, the profile sends video about 1% slower than real time, which is
-  too small to see or hear. The players' extra cushion slowly moves back into the reserve, about
-  10 seconds every 17 minutes, without ever pausing the output. Tuning the channel fresh starts
-  with the full reserve.
-- **Finds the channel in Channels DVR on its own.** Using the `CHANNELS_DVR` address from the
-  profile's settings, it finds the Channels DVR
-  source whose URL is a Dispatcharr M3U output (`/output/m3u/...`), and locates this channel in
-  that playlist by its Dispatcharr UUID. Channels DVR lists an M3U source's channels in playlist
-  order, so the same position gives the Channels DVR channel number. It checks that the counts and
-  names line up first. If the source is out of date (you changed channels in Dispatcharr since
-  Channels DVR last refreshed it), the profile refreshes that source in Channels DVR, the same
-  as the **Refresh** button, and checks again. Playback never waits for this. Every Dispatcharr
-  playlist you've added to Channels DVR is handled the same way.
-- **Switches to a backup only as a last resort.** Every feed of a channel is at a different point
-  in the program (two encodes of the same channel can be minutes apart, and providers don't send
-  the clock time needed to line them up), so a switch always means jumping forward or back in the
-  show. The profile therefore stays on the feed you're watching through anything it can ride out,
-  and you get a freeze that resumes at the same point instead of a jump:
-  - **Late segments, stalls, stale playlists, provider restarts, refused or timed-out requests
-    (407, 429, 503, read timeouts):** it keeps retrying the same feed. If video comes back within
-    about a minute, everything missed is fetched from the provider's playlist, so you continue
-    exactly where you were.
-  - **It switches only when** the feed serves the provider's offline placeholder (at once), has
-    delivered **no new video for 60 seconds** (sooner if the reserve is about to run out, so a
-    dead feed is replaced before the picture freezes), sends segments with **audio and video badly
-    apart** (two in a row), gets stuck mid-download, or has stayed **far slower than real time (below 0.75x)
-    for 5 minutes**. A merely slow feed never triggers a switch.
-  - **Before switching** it checks that the backup answers with a real playlist (not the offline
-    placeholder). A feed that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so
-    a channel whose feeds are all down waits instead of hopping between dead feeds. Once on a
-    backup it stays there as long as it works.
-  - **At the switch** the backup is joined as deep as the outage lasted (deep enough to rebuild
-    the reserve after a long one), timestamps continue where the old feed stopped, and the new
-    remuxer starts before the old one finishes, so the output doesn't pause. A backup on a
-    different provider keeps its own login. Add backup streams with
-    [`dispatcharr_backup_streams.py`](#backup-streams-app).
-- **Keeps pacing smooth through a switch.** The output stays at real time when it changes feeds,
-  including to a backup with a different bitrate or frame rate, so players don't speed up or
-  stall.
-- **Holds back broken segments.** If a segment's audio and video are more than 3 seconds apart
-  (seen after provider restarts), the profile holds that feed back for up to about 30 seconds of
-  video while it tries a backup, so the player doesn't play sound from one moment over picture from
-  another. With no working backup, or before anything has played yet, the segments are passed through.
-- **Never kills a channel that has no backup.** Without a backup it keeps retrying the same feed
-  (and never plays the black placeholder) until the provider comes back.
-- **Keeps Dispatcharr from restarting the stream.** Whenever the output would go quiet for 2
-  seconds, it sends MPEG-TS null packets, which every player discards, so Dispatcharr's
-  "no data" health check doesn't kill the stream. They are sent only while the profile is
-  working: if its writer or its provider fetch gets stuck (for example a provider that trickles a
-  byte every few seconds, which never trips a read timeout), the keepalive stops, Dispatcharr
-  restarts the stream, and the new copy resumes where the old one stopped. After a stuck fetch it
-  goes straight to the channel's next backup instead of the same stuck feed.
-- **Tells a lagging server from a channel restart**, and **backs off politely** on
-  connection-limit responses (503, 509, 429, honoring `Retry-After` up to 30 seconds).
-- **Recordings keep their ending.** See [Recordings](#recordings-1).
-- **Optional transcoding.** Off by default. See [Transcoding (optional)](#transcoding-optional).
-- **No re-encoding by default.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and CPU use are
-  unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are supported.
-
-You watch about 60 seconds behind live on providers with 10-second segments (less on providers
-whose playlists are short).
-
-### Tuner sharing and the buffer, step by step
-
-Channels DVR shares one tuner (one connection to Dispatcharr) between every device watching the
-same channel. A device that joins later starts at the newest video Channels DVR has, so it can't
-use a cushion that built up in the first player. The profile handles this by keeping the cushion
-on the server and sizing what it hands out to the devices actually watching:
-
-1. **First tune.** The profile joins up to about 60 seconds back in the provider's playlist
-   (the whole playlist if it's shorter). It sends about 4 seconds ahead of real time to Channels DVR and
-   keeps the other ~56 seconds as its reserve.
-2. **Steady state.** Video goes out at exactly real time, paced by its timestamps. When the
-   provider is late, the reserve covers the wait; when the provider catches up, the profile
-   downloads the missed segments quickly and the reserve refills. Viewers don't see either.
-3. **Counting viewers.** Every 2 seconds the profile asks Channels DVR how many devices are
-   reading this channel's tuner (`/dvr/activity`).
-4. **A device joins.** When the count goes up, the profile immediately sends an extra 5 seconds
-   out of the reserve. Channels DVR passes it to every device on the tuner, so the newcomer
-   starts with a cushion and the devices already watching gain one too. This happens on every
-   join, including a device coming back after leaving.
-5. **A device leaves.** Nothing is taken back. The output never slows or pauses, so the devices
-   still watching keep their cushion.
-6. **The floor.** Head starts stop when the reserve is down to about 20 seconds (two segments on
-   10-second segments), which is what's needed to ride out a late segment and fail over. A device
-   joining at the floor gets only its own startup buffer, and the log says `reserve at its floor`.
-7. **The rebuild.** Once no device has joined for 2 minutes and the reserve is under 30 seconds,
-   the profile sends video about 1% slower than real time. The players drain their extra
-   cushion a little faster than it's topped up, so it moves back into the reserve: about 10
-   seconds every 17 minutes. It stops when the reserve is back to 30 seconds, or when the
-   players' lead is down to one join's worth (the single-viewer lead plus 5 seconds, about 9
-   seconds). A 1% speed change is too small
-   to see or hear, and the output never stops.
-8. **Channel stops.** When the last device leaves, Dispatcharr ends the stream. The next tune
-   starts fresh with the full reserve.
-
-Example on a channel with 10-second segments:
-
-| What happens | Lead in the players | Reserve in the profile |
-|---|---|---|
-| TV tunes the channel | 4 s | 56 s |
-| Laptop joins | 9 s | 51 s |
-| Laptop leaves | 9 s | 51 s |
-| Laptop joins again | 14 s | 46 s |
-| Phone joins, then more joins over the evening | up to 40 s | down to the 20 s floor |
-| No joins for 2 minutes, reserve under 30 s | eases down by about 1% | rebuilds to 30 s |
-
-If the profile can't identify the channel in Channels DVR (see **Finds the channel in Channels DVR on its own** above), it doesn't count viewers
-and every device gets the single-viewer 4-second lead. Playback is otherwise unaffected.
-
-### Recordings
-
-The profile extends each recording made through it by its delay plus 45 seconds, on top of your
-own padding, so recordings keep the end of the program. Details in [Recordings](#recordings).
+**Undo:** set **Default Stream Profile** (or the channel's **Stream Profile**) back to what it was,
+then retune. You can delete the profile afterwards.
 
 ### HLS in, MPEG-TS out
 
 This is the part people mix up, so in plain English:
 
-- **From your IPTV provider into Dispatcharr: HLS.** Your provider's stream URLs must be HLS
-  (usually `.m3u8`; Xtream `.ts` addresses are switched to their `.m3u8` form). That's what the profile reads.
-- **From Dispatcharr out to Channels DVR: MPEG-TS.** The profile always turns the stream into
-  MPEG-TS. Leave Dispatcharr's output on MPEG-TS, and set the Channels DVR source's
-  **Stream Format** to **MPEG-TS**.
+- **From your IPTV provider into Dispatcharr:** HLS for the HLS profile (usually `.m3u8`; Xtream
+  `.ts` addresses are switched to their `.m3u8` form), raw MPEG-TS for the MPEG-TS profile.
+- **From Dispatcharr out to Channels DVR: always MPEG-TS.** Leave Dispatcharr's output on MPEG-TS,
+  and set the Channels DVR source's **Stream Format** to **MPEG-TS**.
 
 ```
  IPTV provider  --HLS (.m3u8)-->  Dispatcharr + this profile  --MPEG-TS-->  Channels DVR
 ```
 
 Dispatcharr 0.33 and newer can also *send* HLS to clients (**Settings > Stream Settings >
-Default Output Format**, or a user's **Output Format Override**). **Don't use it with this
-profile.** Keep the output format on MPEG-TS:
+Default Output Format**, or a user's **Output Format Override**). **Don't use it with these
+profiles.** Keep the output format on MPEG-TS:
 
-- The profile is built and tested for MPEG-TS output to Channels DVR. Its tuner-sharing head
+- The profiles are built and tested for MPEG-TS output to Channels DVR. Their tuner-sharing head
   start depends on it.
 - Dispatcharr's own release notes say HLS output can't tell when a player has closed, so a
   channel can keep a provider connection busy after everyone stops watching. They recommend
@@ -833,82 +549,30 @@ profile.** Keep the output format on MPEG-TS:
 - Channels DVR plays MPEG-TS from Dispatcharr directly, with the lowest delay.
 
 Channels DVR's own **Stream** playback setting in its apps (HLS between the Channels DVR server
-and a device) is a separate thing. It doesn't change what Dispatcharr sends, and you can leave
-it at its default.
+and a device) is a separate thing. It doesn't change what Dispatcharr sends, and you can leave it
+at its default.
 
-### Requirements
+### What the profiles send to Channels DVR
 
-- **Channels DVR**, with Dispatcharr added as a **Custom Channels** M3U source using Dispatcharr's
-  M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**, with
-  Dispatcharr's output format left on **MPEG-TS** (see [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)).
-  Dispatcharr must be able to reach the Channels DVR server on port 8089.
-- **Dispatcharr 0.32 or newer** (tested on 0.33.0). The profile uses Python, the `requests`
-  module and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is installed. It reads each
-  channel's UUID and backup streams through Dispatcharr's public API, using the API key in its
-  settings (see [Stream profile settings](#stream-profile-settings)).
-- **Your provider must offer HLS** for the channels. **Use an Xtream Codes account if you can**
-  (see [Use an Xtream Codes account](#use-an-xtream-codes-account)): its `.ts` addresses are
-  switched to their `.m3u8` form automatically. Other providers' stream URLs must return an HLS playlist (usually they end in `.m3u8`). This is only what Dispatcharr receives from the provider; what it
-  sends to Channels DVR stays MPEG-TS. Check under **Streams** in
-  Dispatcharr. If they end in `.ts` or have no extension, switch the provider's M3U account to
-  HLS output if your provider offers it, and refresh the account. With MPEG-TS URLs every tune
-  fails with `response is not an m3u8 playlist` in the Dispatcharr log; keep those channels on a
-  built-in profile.
-
-### What it sends to Channels DVR
-
-The profile reads from Channels DVR (`/settings`, `/devices/<source>/channels`, `/dvr/activity`
-and `/dvr/jobs`). It changes only two things: when a Dispatcharr source in Channels DVR is out of
-date it asks Channels DVR to refresh that source, and it lengthens recordings made through it (see
-[Recordings](#recordings)).
-
-### Create the profile
-
-1. In Dispatcharr, open **Settings > Stream Profiles** and press **Add Stream Profile**.
-2. **Name:** anything you like, for example `Channels DVR HLS`.
-3. **Command:** type exactly:
-
-   ```
-   python
-   ```
-
-4. **Parameters:** the profile comes in two parts under
-   [HLS profile parameters](#hls-profile-parameters) below. On GitHub, use the copy button in each
-   block's top-right corner.
-   - **Part 1, settings:** paste it into the Parameters box and fill in the settings at the bottom
-     of it (see [Stream profile settings](#stream-profile-settings)). It starts with `-u -c '`.
-   - **Part 2, code:** paste it directly below part 1, in the same box. It ends with
-     `' {streamUrl} {userAgent} {channelId}`.
-   - Don't edit part 2, don't join its lines, and don't add or remove quotes. The program is
-     wrapped in single quotes and contains none itself, which is what lets it sit in the
-     Parameters box safely. In the settings, use double quotes only.
-5. Press **Save**.
-
-**To update a profile later:** open it in Dispatcharr, keep everything down to the
-`END OF SETTINGS` line, delete everything below it, paste the new part 2 in its place, and save.
-Your settings stay as they are. Retune for the new version to take effect.
-
-### Turn it on
-
-- **For all channels:** **Settings > Stream Settings > Default Stream Profile**, choose the new
-  profile, and save. Channels that have their own stream profile set keep it.
-- **For one channel:** edit the channel and set **Stream Profile** to the new profile.
-
-A profile only applies to streams that start after you save. To switch a channel that is already
-playing, change to another channel in Channels DVR, wait about 10 seconds so Dispatcharr stops the
-old stream, then tune back.
-
-### Recommended settings
-
-- **Dispatcharr:** **Settings > Proxy Settings > Buffering Timeout** of at least **30** seconds, so
-  Dispatcharr's own stream switching doesn't step in before the profile's failover.
-- **Channels DVR:** keep **tuner sharing** on. The profile is built around it.
+The profiles read from Channels DVR (`/settings`, `/devices/<source>/channels`, `/dvr/activity`
+and `/dvr/jobs`). They change only two things: when a Dispatcharr source in Channels DVR is out of
+date they ask Channels DVR to refresh that source, and they lengthen recordings made through them
+(see [Recordings](#recordings)).
 
 ### Check that it's working
 
 Tune a channel, then look at Dispatcharr's log (for Docker, `docker logs dispatcharr`). The
-running process shows up as `python -u -c import os,sys,...`. Messages from the profile start
-with `[hlsloop stream]`:
+running process shows up as `python -u -c import os,sys,...`. Messages start with
+`[hlsloop stream]` or `[tsloop stream]`. Dispatcharr's `Stream unhealthy - no data for 10s` warning
+should not appear for streams using either profile.
+
+| | Healthy session | Look closer if you see |
+|---|---|---|
+| HLS | The channel being found, the occasional `catching up`, and a `status:` line every 10 minutes | `reserve: empty` often, repeated switches, or `fetch loop stuck` |
+| MPEG-TS | The first-video line, the viewer-buffer lines, and a `status:` line every 10 minutes with a reserve around 15-25 s and few errors | `reserve empty` often, repeated `switching to stream`, or a reader stuck |
+
+<details>
+<summary><b>HLS profile log messages</b></summary>
 
 | Message | Meaning |
 |---|---|
@@ -930,7 +594,7 @@ with `[hlsloop stream]`:
 | `restarting remuxer: continuing on the new stream timeline seamlessly (offset Xs)` | After a switch to a backup, a provider channel restart, or audio and video coming back in step, the new stream's timestamps were shifted to continue where the old ones stopped. |
 | `...; no backup stream on this channel, so staying on this feed` | The feed is down and the channel has no backup; the profile keeps waiting for it. |
 | `resuming after Dispatcharr restart` | Dispatcharr restarted the stream; the profile picked up where it stopped. |
-| `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr's database; failover can't be used until a later read succeeds (it tries again at each switch). |
+| `could not read backup streams (...)` | The profile couldn't read the channel's streams from Dispatcharr; failover can't be used until a later read succeeds (it tries again at each switch). |
 | `playlist error (...); retry N in Ns` | A request failed and is being retried. |
 | `skipped segment N` | A segment could not be downloaded in time and was skipped so playback could continue. |
 | `provider is delivering 0.NNx real time and the reserve fell Ns to Ns; switching to stream N of M` | The feed stayed far too slow for 5 minutes; the profile moved to the next backup. |
@@ -941,16 +605,40 @@ with `[hlsloop stream]`:
 | `restarting remuxer: reserve down to Ns; playing 3 percent slower, pitch unchanged, until it is back to Ns` / `restarting remuxer: reserve back to Ns; back to real speed` | Transcoding only: a refill started or finished (see [Transcoding (optional)](#transcoding-optional)). |
 | `status: main stream, reserve Ns, client lead Ns, ... last 10 min: N playlist retries, N catch-ups, N switches, Ns keepalive` | A summary every 10 minutes. A healthy session shows a full reserve and few or no switches. |
 
-Dispatcharr's `Stream unhealthy - no data for 10s` warning should not appear for streams using
-this profile. **A healthy session** logs the channel being found, the occasional `catching up`, and
-a `status:` line every 10 minutes. **Look closer** if you see `reserve: empty` often, repeated
-switches, or `fetch loop stuck`.
+</details>
 
-### What it can't fix
+<details>
+<summary><b>MPEG-TS profile log messages</b></summary>
+
+| Message | Meaning |
+|---|---|
+| `input: first video received from <host>, building the reserve` | The stream started. |
+| `viewer buffer: ...` | Same as the HLS profile (channel found, head start sent, rebuild). `head start dropped` means the reserve didn't have room. |
+| `stream error (...); reconnect N in Ns` then `input: video back after N reconnects (reserve Ns)` | The connection dropped and came back. Normal once in a while. |
+| `reconnected, dropping Ns already sent (reserve Ns)` | A reconnect overlapped what was sent; the repeat was removed. Normal. |
+| `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
+| `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
+| `input: provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see [How it differs from the HLS profile](#how-it-differs-from-the-hls-profile)). |
+| `...; switching to stream N of M` | Failover to the next backup. |
+| `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
+| `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
+| `...; no backup stream on this channel, so staying on this feed` | The feed is down and there is no backup; it keeps retrying. |
+| `output: no video to send for 3s, sending keepalive packets ...` / `output: video flowing again after Ns` | A gap was covered by keepalive packets. |
+| `reserve empty: ... playback will pause until video arrives` / `reserve refilled to Ns` | The provider fell behind for longer than the reserve covers. This matches visible buffering. |
+| `output: stopped for Ns and the reader is stuck; no keepalive, so Dispatcharr can restart the stream` (or `the writer is stuck`) | The provider connection hung; Dispatcharr restarts the stream, and the restarted copy goes to the next backup (`the previous process got stuck reading this feed`). |
+| `input stream is arriving faster than real time ...` | Flood protection kicked in (usually an offline channel's placeholder clip). |
+| `restarting remuxer: reserve down to Ns; playing 3 percent slower ...` / `... back to real speed` | Transcoding only: a refill started or finished, as in the HLS profile. |
+| `status: stream N of M, reserve Ns, client lead Ns, ... last 10 min: N stream retries, N remuxes, N failovers, Ns keepalive` | A summary every 10 minutes. |
+
+</details>
+
+### What the profiles can't fix
+
+Both profiles:
 
 - **A switch to a backup jumps forward or back in the program.** Two feeds of the same channel are
   separate encodes that can run minutes apart, and providers don't send the clock time needed to
-  line them up. That's why the profile switches only as a last resort. A provider that restarts a
+  line them up. That's why the profiles switch only as a last resort. A provider that restarts a
   channel by itself can cause the same kind of jump without any switch.
 - **Riding out an outage costs reserve.** The profile waits for the feed to come back as long as
   its reserve lasts (up to 60 seconds), then switches just before the picture would freeze.
@@ -970,12 +658,382 @@ switches, or `fetch loop stuck`.
   request, so a failover can briefly look like two connections. If every connection on your account
   is busy at that moment, the switch may have to wait.
 
-### Undo
+The MPEG-TS profile also:
 
-Set **Default Stream Profile** (or the channel's **Stream Profile**) back to what it was, then
-retune. You can delete the profile afterwards.
+- **Loses video from an outage longer than the reconnect overlap.** HLS can re-fetch it from the
+  playlist; raw TS can't.
+- **Shows a small skip or repeat on a reconnect onto a different provider timeline.**
+- **Has a smaller cushion:** about 20 s instead of about 60 s, so a long provider stall reaches the
+  players sooner.
+
+## Recordings
+
+Both profiles run a little behind the provider's live edge: that's the reserve that rides out late
+or missing video (about 60 s for HLS, about 20 s for MPEG-TS). Channels DVR starts and stops
+recordings by the clock, so without help the last minute of a program would still be inside the
+profile when Channels DVR stops recording, and the ending would be cut off. The profiles handle
+this for you:
+
+- **They extend the recording in Channels DVR.** While a recording is running on a channel using
+  the profile, the profile lengthens it (the same as editing its end time in Channels DVR) by the
+  profile's own measured delay **plus 45 seconds** for the provider itself running behind the
+  broadcast (IPTV providers usually run about 20-40 s behind). That's about 105 s past the end for
+  HLS and about 65-80 s for MPEG-TS, never more than 3 minutes.
+- **Your padding is kept.** The extension is added **on top of** whatever end padding the recording
+  or its pass already has. If you record a show 30 minutes late because a game runs before it, it
+  still gets its 30 minutes, plus the extension.
+- **Only recordings made through this profile.** The profile asks Channels DVR which recordings are
+  using this exact source and channel. Recordings Channels DVR makes from any other source (an
+  antenna, another provider, a TV Everywhere source) are never touched, even if they list the same
+  channel.
+- **Once per recording.** Each recording's original length is saved in Dispatcharr's `/data`
+  folder, so restarting Dispatcharr or its container mid-recording doesn't add the extension twice.
+  See [Files the profiles write](#files-the-profiles-write).
+- **Watching and recording at the same time is fine.** The stream itself is never changed for a
+  recording, so a live viewer on the same channel sees nothing different.
+
+The log line is `recording: <show> on ch N extended by Ns on top of its own padding (...)`, and
+Channels DVR shows the later end time on the recording.
+
+What it can't cover: if your provider runs more than about 45 seconds behind the broadcast, add a
+little end padding for those channels yourself.
+
+## Transcoding (optional)
+
+Both profiles can re-encode video instead of passing it through. It's off by default.
+
+**Use transcoding whenever your hardware allows it**, ideally with a GPU (see [Use a GPU](#use-a-gpu)).
+It is the only way the profiles can keep one steady format across backup feeds and refill the
+reserve after a long outage:
+
+- **One format for every feed.** A failover to a backup with a different frame rate or resolution
+  doesn't make Channels DVR (Apple TV in particular) drop frames or drift the audio.
+- **The reserve refills itself** after a long outage (see below).
+
+Without it there is little more the profiles can do: a backup with a different frame rate can
+upset the player, and a drained reserve only comes back on a retune (the MPEG-TS profile can also
+top it up by reconnecting for a fresh burst when the provider drifts behind).
+
+The costs: GPU (or CPU) time, a little picture quality, and a few seconds more delay behind live.
+
+### Transcoding settings
+
+Set one line in the profile's settings, for example:
+
+```
+TRANSCODE="1080p60"
+```
+
+| Setting | Output | Bitrate |
+|---|---|---|
+| `"off"` | passed through untouched (default) | as the provider sends it |
+| `"1080p60"` | 1080p, 59.94 fps | 6 Mbps |
+| `"1080p30"` | 1080p, 29.97 fps | 4.5 Mbps |
+| `"720p60"` | 720p, 59.94 fps | 4.5 Mbps |
+| `"720p30"` | 720p, 29.97 fps | 3 Mbps |
+| `"1080p50"`, `"1080p25"`, `"720p50"`, `"720p25"` | the same for 50 Hz countries | |
+
+- **Which frame rate?** The highest one your channels use. 60 suits sports, news and most US
+  broadcast channels; a 30 fps channel just shows each frame twice, so nothing is lost. 30 is fine
+  for mostly movies and entertainment and is easier on weak hardware, but 60 fps sports will look
+  choppier. In 50 Hz countries (Europe, the UK, Australia and others) use 50 or 25, since 60 or 30
+  there makes motion judder.
+- **Which size?** 1080p with a GPU, 720p on weak hardware or when encoding on the CPU. The bitrates
+  match what IPTV providers typically send, so quality holds without making the stream bigger.
+- Audio is always stereo AAC at 48 kHz. An unknown setting counts as `"off"`.
+
+### Refilling the reserve (3% slower)
+
+> [!IMPORTANT]
+> **With transcoding on, playback runs 3% slower for a while after a provider problem.** If the
+> reserve stays below half for 30 seconds (about 30 s on HLS, 10 s on MPEG-TS; not in the first
+> 90 seconds after tuning or switching feeds, and at least a minute after the last change), video
+> and audio play 3% slower together, with the audio pitch unchanged, until the reserve is back to
+> three quarters (about 45 s on HLS, 16 s on MPEG-TS). The rest of the time video plays at its
+> real speed.
+
+- **Two clean switches per refill.** The encoder is restarted once when the slowdown starts and
+  once when it ends, with the speed set from the first frame. Nothing is changed in a running
+  encoder, so audio and video can't drift apart. Each restart waits up to 10 seconds for the next
+  keyframe (then restarts anyway), keeps the output timeline continuous and corrects for where the
+  audio sits in the stream, so the picture doesn't pause. On HLS the restarted encoder's start is
+  worked out from the timestamps already fed in, so this works whether or not the provider's
+  segments start on keyframes.
+- **Refill rate:** about 1.8 s of reserve per minute, so a refill takes about 8 to 17 minutes on
+  HLS (up to about 26 minutes from empty) and 3 to 5 minutes on MPEG-TS.
+- **What you might see:** while it runs, a 60 fps source repeats one frame about twice a second.
+  On a smooth, fast camera pan that can show as a tiny hitch.
+- **Transcoding only:** without transcoding the audio is copied as-is, and slowing it would mean
+  stretching its timestamps, which causes crackle or drift. Without transcoding the HLS reserve
+  only comes back on a retune, and the MPEG-TS reserve only through a fresh connection's burst.
+
+<details>
+<summary><b>Why 3%</b></summary>
+
+The rate is a trade-off between refilling quickly and staying below what people can notice.
+
+- **Motion.** In lab experiments, people comparing two moving patterns side by side can just tell
+  speeds apart when they differ by roughly 5 to 10% (McKee, 1981; De Bruyn and Orban, 1988).
+  That's the best case: ideal conditions and direct comparison. Judging one speed on its own, as
+  a TV viewer does, is harder. 3% sits below the best-case threshold.
+- **Speech.** Listeners notice a change in speaking tempo at about 5%, and slowdowns are harder to
+  notice than speedups (Quene, 2007). Pitch is corrected, so voices don't drop in pitch.
+- **Broadcast precedent.** For decades, 50 Hz countries played 24 fps films at 25 fps, which is
+  4.2% faster, to hundreds of millions of viewers. The faster motion went largely unnoticed; the
+  raised pitch was what people noticed, and pitch-corrected versions drew few complaints.
+  Broadcast profanity-delay units such as Eventide's BD600 rebuild their delay the same way, at a
+  rate their maker describes as subtle and transparent.
+- **Where it can show.** Music is less forgiving: tempo changes of around 3% can be noticed, and
+  trained musicians notice smaller changes than other listeners. A second screen showing the same
+  channel in real time will drift away by about 1.8 s a minute. And someone who knows the slowdown
+  is on and is watching for it may believe they see it; the fair test is a blind comparison.
+
+3% stays under the motion and speech thresholds and under both broadcast precedents, and it
+refills quickly enough that a refill is usually over in under 20 minutes. The figures come from the
+cited studies and are approximate.
+
+</details>
+
+### Use a GPU
+
+Encoding 1080p60 video on the CPU takes most of a modern core per stream, and small machines
+(Intel N100s, many NAS boxes, ARM) can't keep up at all. A GPU does the encoding in dedicated
+hardware: on an Intel iGPU a stream costs roughly a third of one CPU core, mostly for decoding and
+scaling.
+
+The profile picks an encoder on its own the first time it transcodes and logs which one it used:
+
+1. **Intel Quick Sync or AMD** (VAAPI), if `/dev/dri/renderD128` exists in the container.
+2. **NVIDIA** (NVENC), if the NVIDIA runtime is available.
+3. **The CPU** (`libx264`), otherwise. Use a 720p setting if you have to run here.
+
+Dispatcharr's image already includes all three encoders; the container just needs access to the
+GPU. Recreate the container after the change. To check it, tune a channel and look for
+`transcoding with Intel/AMD graphics (VAAPI)` or `transcoding with NVIDIA graphics (NVENC)` in
+Dispatcharr's log. `transcoding with the CPU` means the container can't see the GPU.
+
+<details>
+<summary><b>Intel or AMD: give the container the GPU</b></summary>
+
+**Docker Compose:**
+```yaml
+services:
+  dispatcharr:
+    devices:
+      - /dev/dri:/dev/dri
+```
+
+**`docker run`:** add `--device /dev/dri:/dev/dri`.
+
+**Unraid template:** add `--device=/dev/dri` to **Extra Parameters**.
+
+</details>
+
+<details>
+<summary><b>NVIDIA: give the container the GPU</b></summary>
+
+NVIDIA needs the NVIDIA driver on the host plus the NVIDIA Container Toolkit (on Unraid, the
+**Nvidia Driver** plugin provides both).
+
+**Docker Compose:**
+```yaml
+services:
+  dispatcharr:
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+```
+(Recent Compose versions also accept `deploy: resources: reservations: devices:` with
+`driver: nvidia` and `capabilities: [gpu]` instead of `runtime: nvidia`.)
+
+**`docker run`:** add `--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all`
+(or `--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all`).
+
+**Unraid template:** add `--runtime=nvidia` to **Extra Parameters**, then add two variables:
+`NVIDIA_VISIBLE_DEVICES` set to `all` (or the GPU UUID shown on the Nvidia Driver plugin page) and
+`NVIDIA_DRIVER_CAPABILITIES` set to `all`.
+
+</details>
+
+## Files the profiles write
+
+Both profiles keep a few small files inside the Dispatcharr container. Nothing else is written,
+and nothing is written outside the container.
+
+| File | Where | What's in it | Why | Cleanup |
+|---|---|---|---|---|
+| `hlsloop-jobs-<channel>.json`, `tsloop-jobs-<channel>.json` | `/data` (Dispatcharr's persistent folder; `/tmp` if `/data` isn't writable) | The original length of each recording the profile has extended on that channel, with the time it was saved. A few dozen bytes per recording. | So a recording is extended only once, even if Dispatcharr or its container restarts mid-recording. | Written when a recording on that channel is first seen, before the recording is extended. Entries older than 24 hours are dropped whenever the file is updated, and every time a stream starts, the profile deletes any of these files that hasn't changed in 24 hours. A recording never needs its saved length longer than that. |
+| `hlsloop-hw.txt`, `tsloop-hw.txt` | `/tmp` | The encoder transcoding picked (`vaapi`, `nvenc` or `cpu`). A few bytes. | So the encoder test runs once, not on every tune. Only written with transcoding on. | Re-checked when it is more than an hour old; `/tmp` is cleared whenever the Dispatcharr container restarts. |
+| `hlsloop-<id>.json`, `tsloop-<id>.json` | `/tmp` | The stream's position: last segment sent, timeline offset, current feed, reserve depth and viewer head start. Under 2 KB. | So when Dispatcharr restarts a stream (for example after a stuck feed), the restarted copy carries on where the old one stopped. It's only used if it's less than 4 seconds old and the stream URL hasn't changed. | Rewritten continuously while the channel plays, one file per channel. Not deleted by the profile; `/tmp` is cleared whenever the Dispatcharr container restarts. |
+
+To remove everything, delete those files (`rm -f /data/*loop-jobs-*.json /tmp/hlsloop-* /tmp/tsloop-*`
+inside the container) while nothing is playing.
+
+## HLS stream profile for Dispatcharr and Channels DVR
+
+This is the **HLS profile** (recommended). For providers that only send MPEG-TS, see
+[MPEG-TS stream profile for Dispatcharr and Channels DVR](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr).
+Setup, settings, log checks and limits shared with the MPEG-TS profile are under
+[Setting up a stream profile](#setting-up-a-stream-profile).
+
+### Why
+
+IPTV providers that serve HLS (`.m3u8`) publish live video as a stream of short segments. From time
+to time a segment arrives late, or the provider stalls, refuses a request, restarts the channel, or
+replaces a dead channel with a black "offline" placeholder. Dispatcharr's built-in stream profiles
+start playback right at the live edge and give up after three quick reconnects, so those problems
+show up in Channels DVR as buffering, a black screen or a dropped channel.
+
+Channels DVR also shares one tuner between every device watching the same channel. A device that
+joins later starts at the newest video Channels DVR has, so a cushion built up in the first
+player doesn't help the second one.
+
+### How it works
+
+The profile replaces Dispatcharr's stream fetcher with a small Python program that runs inside
+Dispatcharr. It holds the cushion itself and feeds Channels DVR at a steady pace, the way an HDMI
+encoder does. You watch about 60 seconds behind live on providers with 10-second segments (less on
+providers whose playlists are short).
+
+**Buffer and pacing**
+
+- **The reserve lives in the profile, not in the players.** It joins up to about 60 seconds back
+  in the provider's playlist (at least 3 segments, or the whole playlist if it's shorter) and keeps
+  almost all of it as a private reserve. When the provider publishes late, the reserve keeps video
+  flowing to every device at once. When the provider catches up, the reserve refills at download
+  speed.
+- **Paced by video timestamps.** Video leaves the profile at exactly real time, timed by each
+  frame's timestamp rather than by bytes, so players receive it smoothly and every device on a
+  shared tuner gets the same stream. The output stays at real time through a feed change too,
+  including to a backup with a different bitrate or frame rate, so players don't speed up or stall.
+- **A small head start for the players, sized for Channels DVR.** One viewer gets about 4 seconds
+  ahead (more on low-bitrate channels, so Dispatcharr's ~256 KB chunks never leave the player
+  short). Every time another Channels DVR device joins the channel, including one rejoining after
+  another left, the profile sends a 5-second head start out of its reserve. Channels DVR shares one
+  connection per tuner, so every device on it gets the extra cushion, and a device that joins late
+  doesn't start empty. A device leaving never takes the cushion back, so the others never drain.
+- **The reserve has a floor and rebuilds itself.** Head starts stop once the reserve is down to
+  about 20 seconds, so late segments are always covered. When no device has joined for 2 minutes
+  and the reserve is under 30 seconds, the profile sends video about 1% slower than real time, too
+  small to see or hear, and the players' extra cushion moves back into the reserve. See
+  [Tuner sharing and the buffer, step by step](#tuner-sharing-and-the-buffer-step-by-step).
+- **Finds the channel in Channels DVR on its own.** Using the `CHANNELS_DVR` address from the
+  profile's settings, it finds the Channels DVR source whose URL is a Dispatcharr M3U output
+  (`/output/m3u/...`), and locates this channel in that playlist by its Dispatcharr UUID. Channels
+  DVR lists an M3U source's channels in playlist order, so the same position gives the Channels DVR
+  channel number. It checks that the counts and names line up first. If the source is out of date
+  (you changed channels in Dispatcharr since Channels DVR last refreshed it), the profile refreshes
+  that source in Channels DVR, the same as the **Refresh** button, and checks again. Playback never
+  waits for this. Every Dispatcharr playlist you've added to Channels DVR is handled the same way.
+
+**Failover: a backup only as a last resort**
+
+Every feed of a channel is at a different point in the program (two encodes of the same channel
+can be minutes apart, and providers don't send the clock time needed to line them up), so a switch
+always means jumping forward or back in the show. The profile therefore stays on the feed you're
+watching through anything it can ride out, and you get a freeze that resumes at the same point
+instead of a jump.
+
+| Situation | What the profile does |
+|---|---|
+| Late segments, stalls, stale playlists, provider restarts, refused or timed-out requests (407, 429, 503, read timeouts) | Keeps retrying the same feed. If video comes back within about a minute, everything missed is fetched from the provider's playlist, so you continue exactly where you were. |
+| Offline placeholder (at once); **no new video for 60 seconds** (sooner if the reserve is about to run out, so a dead feed is replaced before the picture freezes); **audio and video badly apart** (two segments in a row); stuck mid-download; **far slower than real time (below 0.75x) for 5 minutes** | Switches to the next backup. A merely slow feed never triggers a switch. |
+| Before switching | Checks that the backup answers with a real playlist (not the offline placeholder). A feed that failed is left alone for a while (1, 2, 4, 8, then 10 minutes), so a channel whose feeds are all down waits instead of hopping between dead feeds. Once on a backup it stays there as long as it works. |
+| At the switch | Joins the backup as deep as the outage lasted (deep enough to rebuild the reserve after a long one), continues timestamps where the old feed stopped, and starts the new remuxer before the old one finishes, so the output doesn't pause. A backup on a different provider keeps its own login. Add backup streams with [`dispatcharr_backup_streams.py`](#backup-streams-app). |
+| Segment audio and video more than 3 seconds apart (seen after provider restarts) | Holds that feed back for up to about 30 seconds of video while it tries a backup, so the player doesn't play sound from one moment over picture from another. With no working backup, or before anything has played yet, the segments are passed through. |
+| No backup on the channel | Never kills the channel: keeps retrying the same feed (and never plays the black placeholder) until the provider comes back. |
+| Connection-limit responses (503, 509, 429) | **Backs off politely**, honoring `Retry-After` up to 30 seconds. It also **tells a lagging server from a channel restart**. |
+
+**Keepalive and recovery**
+
+- **Keeps Dispatcharr from restarting the stream.** Whenever the output would go quiet for 2
+  seconds, it sends MPEG-TS null packets, which every player discards, so Dispatcharr's "no data"
+  health check doesn't kill the stream. They are sent only while the profile is working: if its
+  writer or its provider fetch gets stuck (for example a provider that trickles a byte every few
+  seconds, which never trips a read timeout), the keepalive stops, Dispatcharr restarts the stream,
+  and the restarted copy resumes where the old one stopped. After a stuck fetch it goes straight to
+  the channel's next backup instead of the same stuck feed.
+
+**Output**
+
+- **No re-encoding by default.** `ffmpeg -c copy` delivers MPEG-TS to Dispatcharr, so quality and
+  CPU use are unchanged. AES-128 encrypted streams, fMP4 segments and byte-range playlists are
+  supported. [Transcoding](#transcoding-optional) is optional and off by default.
+- **Recordings keep their ending:** each recording made through it is extended by its delay plus
+  45 seconds, on top of your own padding. See [Recordings](#recordings).
+
+### Tuner sharing and the buffer, step by step
+
+<details>
+<summary><b>How the head start and reserve change as devices join and leave</b></summary>
+
+Channels DVR shares one tuner (one connection to Dispatcharr) between every device watching the
+same channel. A device that joins later starts at the newest video Channels DVR has, so it can't
+use a cushion that built up in the first player. The profile handles this by keeping the cushion
+on the server and sizing what it hands out to the devices actually watching:
+
+1. **First tune.** The profile joins up to about 60 seconds back in the provider's playlist (the
+   whole playlist if it's shorter). It sends about 4 seconds ahead of real time to Channels DVR and
+   keeps the other ~56 seconds as its reserve.
+2. **Steady state.** Video goes out at exactly real time, paced by its timestamps. When the
+   provider is late, the reserve covers the wait; when the provider catches up, the profile
+   downloads the missed segments quickly and the reserve refills. Viewers don't see either.
+3. **Counting viewers.** Every 2 seconds the profile asks Channels DVR how many devices are
+   reading this channel's tuner (`/dvr/activity`).
+4. **A device joins.** When the count goes up, the profile immediately sends an extra 5 seconds
+   out of the reserve. Channels DVR passes it to every device on the tuner, so the newcomer starts
+   with a cushion and the devices already watching gain one too. This happens on every join,
+   including a device coming back after leaving.
+5. **A device leaves.** Nothing is taken back. The output never slows or pauses, so the devices
+   still watching keep their cushion.
+6. **The floor.** Head starts stop when the reserve is down to about 20 seconds (two segments on
+   10-second segments), which is what's needed to ride out a late segment and fail over. A device
+   joining at the floor gets only its own startup buffer, and the log says `reserve at its floor`.
+7. **The rebuild.** Once no device has joined for 2 minutes and the reserve is under 30 seconds,
+   the profile sends video about 1% slower than real time. The players drain their extra cushion a
+   little faster than it's topped up, so it moves back into the reserve: about 10 seconds every 17
+   minutes, without ever pausing the output. It stops when the reserve is back to 30 seconds, or
+   when the players' lead is down to one join's worth (the single-viewer lead plus 5 seconds, about
+   9 seconds). A 1% speed change is too small to see or hear.
+8. **Channel stops.** When the last device leaves, Dispatcharr ends the stream. The next tune
+   starts fresh with the full reserve.
+
+Example on a channel with 10-second segments:
+
+| What happens | Lead in the players | Reserve in the profile |
+|---|---|---|
+| TV tunes the channel | 4 s | 56 s |
+| Laptop joins | 9 s | 51 s |
+| Laptop leaves | 9 s | 51 s |
+| Laptop joins again | 14 s | 46 s |
+| Phone joins, then more joins over the evening | up to 40 s | down to the 20 s floor |
+| No joins for 2 minutes, reserve under 30 s | eases down by about 1% | rebuilds to 30 s |
+
+If the profile can't identify the channel in Channels DVR (see **Finds the channel in Channels DVR
+on its own** above), it doesn't count viewers and every device gets the single-viewer 4-second
+lead. Playback is otherwise unaffected.
+
+</details>
+
+### Provider requirements
+
+**Your provider must offer HLS** for the channels. **Use an Xtream Codes account if you can** (see
+[Use an Xtream Codes account](#use-an-xtream-codes-account)): its `.ts` addresses are switched to
+their `.m3u8` form automatically. Other providers' stream URLs must return an HLS playlist (usually
+they end in `.m3u8`). This is only what Dispatcharr receives from the provider; what it sends to
+Channels DVR stays MPEG-TS.
+
+Check under **Streams** in Dispatcharr. If they end in `.ts` or have no extension, switch the
+provider's M3U account to HLS output if your provider offers it, and refresh the account. With
+MPEG-TS URLs every tune fails with `response is not an m3u8 playlist` in the Dispatcharr log; keep
+those channels on a built-in profile (or use the
+[MPEG-TS profile](#mpeg-ts-stream-profile-for-dispatcharr-and-channels-dvr)).
 
 ### HLS profile parameters
+
+Paste these as described in [Install a profile](#install-a-profile) (name it something like
+`Channels DVR HLS`).
 
 These two blocks are generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
@@ -1641,9 +1699,10 @@ bye()' {streamUrl} {userAgent} {channelId}
 ## MPEG-TS stream profile for Dispatcharr and Channels DVR
 
 **Use this only if your provider has no HLS.** See [HLS or MPEG-TS profile?](#hls-or-mpeg-ts-profile).
-It does the same job as the [HLS profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) for providers
-whose stream URLs are raw MPEG-TS (`.ts`), and is built specifically for Channels DVR in the same
-way: it counts the devices watching and refreshes an out-of-date Channels DVR source the same way.
+It does the same job as the [HLS profile](#hls-stream-profile-for-dispatcharr-and-channels-dvr) for
+providers whose stream URLs are raw MPEG-TS (`.ts`), and is built for Channels DVR in the same way:
+it counts the devices watching and refreshes an out-of-date Channels DVR source the same way. Setup,
+settings and shared limits are under [Setting up a stream profile](#setting-up-a-stream-profile).
 
 ### How it differs from the HLS profile
 
@@ -1655,94 +1714,64 @@ Raw MPEG-TS can't fetch the past. Each connection starts with a burst of recent 
   group; audio-only channels use the audio clock).
 - **Reconnects are stitched, not refetched.** A reconnect re-sends video that was already sent. The
   profile drops the overlap per video frame, keeps continuity counters and timestamps continuous,
-  and starts the new connection on a keyframe. When the provider lands on a different timeline,
-  it splices so playback continues with a small skip or repeat instead of a stall. When a reconnect
+  and starts the new connection on a keyframe. When the provider lands on a different timeline, it
+  splices so playback continues with a small skip or repeat instead of a stall. When a reconnect
   lands too far behind to catch up in time, it replays rather than freezing.
 - **Switching is a last resort, as in the HLS profile.** It switches to the next backup after 60 s
-  without new video (sooner if its reserve is about to run out), on a feed whose audio and video
-  are more than 3 seconds apart (held back; if no backup works it is shown after about 30 seconds,
-  as in the HLS profile), on the offline placeholder, on a feed with no decodable video, or on a feed
-  that has stayed slower than real time for 5 minutes. Refused or failed connections are retried
-  on the same feed. A backup is joined only as deep as the outage lasted.
+  without new video (sooner if its reserve is about to run out), on a feed whose audio and video are
+  more than 3 seconds apart (held back; if no backup works it is shown after about 30 seconds, as in
+  the HLS profile), on the offline placeholder, on a feed with no decodable video, or on a feed that
+  has stayed slower than real time for 5 minutes. Refused or failed connections are retried on the
+  same feed. A backup is joined only as deep as the outage lasted.
 - **A provider that drifts behind live** (delivers slightly slower than real time for a long time)
   gets a fresh connection for a new burst, at most once every 5 minutes (sooner if the reserve is
-  nearly empty). This can cause the
-  occasional small skip on a drifting channel.
-- **Optional transcoding** works as in the HLS profile; see [Transcoding (optional)](#transcoding-optional).
+  nearly empty). This can cause the occasional small skip on a drifting channel.
 - **The head start for extra devices is capped** at the burst depth minus 12 s (usually 8-14 s in
   total), so a late joiner can never eat the headroom failover needs.
 - **Flood protection:** an offline channel that serves a recorded clip far faster than real time is
   read at playback speed, with at most 60 s queued.
-- Everything else matches the HLS profile: backups checked before switching, failed feeds left
-  alone for a while, smooth pacing through a switch, recording extensions (see
-  [Recordings](#recordings)), gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that goes to the next backup, resume after a Dispatcharr
-  restart, no hammering on a dead channel (retries at least 5 seconds apart), Retry-After honored.
+- **Keepalive** starts after 3 s without video (2 s on HLS). Dead channels are not hammered:
+  retries are at least 5 seconds apart.
+- **Everything else matches the HLS profile:** backups checked before switching, failed feeds left
+  alone for a while, smooth pacing through a switch, optional
+  [transcoding](#transcoding-optional), recording extensions (see [Recordings](#recordings)),
+  gap-free remux at a switch, keepalive only while the profile is working, stuck-feed recovery that
+  goes to the next backup, resume after a Dispatcharr restart, and Retry-After honored.
 
-### Requirements
+### Provider requirements
 
-- Everything under the HLS profile's [Requirements](#requirements-1), except the provider part:
-- **Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension). **Use an
-  Xtream Codes account if you can** (see [Use an Xtream Codes account](#use-an-xtream-codes-account)),
-  or an M3U account with `output=ts`. This profile does no conversion; an `.m3u8`
-  URL that answers with an HLS playlist is refused with `this stream URL is HLS; use the HLS profile for it`.
-- Dispatcharr's output and the Channels DVR source's **Stream Format** stay on **MPEG-TS**, as for
-  the HLS profile.
-
-### Create and turn it on
-
-Same steps as [Create the profile](#create-the-profile) and [Turn it on](#turn-it-on), with the
-block under [MPEG-TS profile parameters](#mpeg-ts-profile-parameters). Name it something like
-`Channels DVR TS`. Command `python`.
-
-### Check that it's working
-
-Messages start with `[tsloop stream]`.
-
-| Message | Meaning |
-|---|---|
-| `input: first video received from <host>, building the reserve` | The stream started. |
-| `viewer buffer: ...` | Same as the HLS profile (channel found, head start sent, rebuild). `head start dropped` means the reserve didn't have room. |
-| `stream error (...); reconnect N in Ns` then `input: video back after N reconnects (reserve Ns)` | The connection dropped and came back. Normal now and then. |
-| `reconnected, dropping Ns already sent (reserve Ns)` | A reconnect overlapped what was sent; the repeat was removed. Normal. |
-| `timeline jumped Ns inside the stream, re-syncing on this connection` / `restarting remuxer: ...` | The provider's timestamps jumped; the output timeline was kept continuous. |
-| `reconnected Ns behind ... replaying instead of stalling` | A reconnect landed too far behind; a short stretch is shown again instead of freezing. |
-| `input: provider fell Ns behind live ...; reconnecting for a fresh burst` | Drift refresh (see above). |
-| `...; switching to stream N of M` | Failover to the next backup. |
-| `stream N of M failed; not using it again for Ns` / `backup stream N of M is not answering; not trying it again for Ns` | A feed failed or a backup didn't answer; it is skipped for that long. |
-| `recording: <show> on ch N extended by Ns on top of its own padding (...)` | A recording on this channel was lengthened so it keeps the end of the program. See [Recordings](#recordings). |
-| `...; no backup stream on this channel, so staying on this feed` | The feed is down and there is no backup; it keeps retrying. |
-| `output: no video to send for 3s, sending keepalive packets ...` / `output: video flowing again after Ns` | A gap was covered by keepalive packets. |
-| `reserve empty: ... playback will pause until video arrives` / `reserve refilled to Ns` | The provider fell behind for longer than the reserve covers. This matches visible buffering. |
-| `output: stopped for Ns and the reader is stuck; no keepalive, so Dispatcharr can restart the stream` (or `the writer is stuck`) | The provider connection hung; Dispatcharr restarts the stream, and the new copy goes to the next backup (`the previous process got stuck reading this feed`). |
-| `input stream is arriving faster than real time ...` | Flood protection kicked in (usually an offline channel's placeholder clip). |
-| `restarting remuxer: reserve down to Ns; playing 3 percent slower ...` / `... back to real speed` | Transcoding only: a refill started or finished, as in the HLS profile. |
-| `status: stream N of M, reserve Ns, client lead Ns, ... last 10 min: N stream retries, N remuxes, N failovers, Ns keepalive` | A summary every 10 minutes. |
-
-**A healthy session** shows the first-video line, the viewer-buffer lines, and a `status:` line every
-10 minutes with a reserve around 15-25 s and few errors. **Look closer** if you see `reserve empty`
-often, repeated `switching to stream`, or a reader stuck.
-
-### What it can't fix
-
-Everything listed for the HLS profile, plus:
-
-- **Video from an outage longer than the reconnect overlap is lost.** HLS can re-fetch it from the
-  playlist; raw TS can't.
-- **A reconnect onto a different provider timeline** shows as a small skip or repeat.
-- **Smaller cushion:** about 20 s instead of about 60 s, so a long provider stall reaches the
-  players sooner.
+**Your provider's stream URLs must be MPEG-TS** (end in `.ts` or have no extension). **Use an
+Xtream Codes account if you can** (see [Use an Xtream Codes account](#use-an-xtream-codes-account)),
+or an M3U account with `output=ts`. This profile does no conversion; an `.m3u8` URL that answers
+with an HLS playlist is refused with `this stream URL is HLS; use the HLS profile for it`.
+Everything else in [Requirements for the profiles](#requirements-for-the-profiles) applies as for
+the HLS profile, including Dispatcharr's output and the Channels DVR source's **Stream Format**
+staying on **MPEG-TS**.
 
 ### Tested
+
+<details>
+<summary><b>Test results for the MPEG-TS profile</b></summary>
 
 On a real provider, one stream at a time: CNN 70 minutes (including a real 71-minute timeline jump
 the provider made mid-stream), ESPN 60 minutes and MSNBC 9 minutes, all with 0 stalls, the longest
 output gap under 1 s, and 0 connection-limit errors. A live backup switch (main feed hung) and live
 dead channels (offline and nonexistent) were also tested; the switch had 0 stalls and the dead
-channels were retried about every 6 seconds with the keepalive covering the output. Through a real Channels DVR server, three devices joining one channel 40 s apart (plus a later join and leave) all played with 0 stalls; each extra device got its head start until the reserve reached the failover floor. Plus 47 offline
-scenarios against a mock provider, covering reconnects, timeline jumps, failover, floods, drift,
-stuck feeds and the tuner-sharing head start.
+channels were retried about every 6 seconds with the keepalive covering the output.
+
+Through a real Channels DVR server, three devices joining one channel 40 s apart (plus a later join
+and leave) all played with 0 stalls; each extra device got its head start until the reserve reached
+the failover floor.
+
+Plus 47 offline scenarios against a mock provider, covering reconnects, timeline jumps, failover,
+floods, drift, stuck feeds and the tuner-sharing head start.
+
+</details>
 
 ### MPEG-TS profile parameters
+
+Paste these as described in [Install a profile](#install-a-profile) (name it something like
+`Channels DVR TS`; command `python`).
 
 These two blocks are generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
@@ -2445,17 +2474,14 @@ through Dispatcharr's API.
 
 Nothing is specific to one provider or one channel name; it works with any M3U or Xtream source.
 
-- **Pre-ticked ("Ready to write")** only on strong evidence: the same channel name once provider
-  prefixes (`US|`, `U.S|`, `TV|`) and quality words (HD, FHD, 4K, RAW) are ignored, the same call
-  sign (for example `(WNBC)`), or the same provider guide ID (`tvg-id`). The guide ID is what
-  catches renamed channels, such as an old "MSNBC" feed and a new "MS NOW" feed that the provider
-  still tags with the same ID.
-- **"Suggestions to check"** are similar names the app isn't sure about. They are never ticked for
-  you.
+| Result | When |
+|---|---|
+| **Ready to write** (pre-ticked, green) | Only on strong evidence: the same channel name once provider prefixes (`US|`, `U.S|`, `TV|`) and quality words (HD, FHD, 4K, RAW) are ignored, the same call sign (for example `(WNBC)`), or the same provider guide ID (`tvg-id`). The guide ID is what catches renamed channels, such as an old "MSNBC" feed and a later "MS NOW" feed that the provider still tags with the same ID. |
+| **Suggestions to check** (yellow) | Similar names the app isn't sure about. Never ticked for you. |
+| **Already has backups** | Channels that already have backups are left alone; nothing extra is pre-ticked on them. |
+
 - **East and West/Pacific/Mountain/Central feeds are never mixed.** A name without a region counts
   as the East feed. A channel with a call sign in its name only matches that call sign.
-- **Channels that already have backups** show as "Already has backups" and are left alone; nothing
-  extra is pre-ticked on them.
 - The **live search** box finds any stream as you type, so you can add feeds the app didn't find.
 
 ### Run it
@@ -2470,9 +2496,10 @@ py dispatcharr_backup_streams.py
 
 It needs Python 3.8+ with Tk, like the matcher apps (see [Requirements](#requirements)). Enter the
 Dispatcharr address (port 9191 is assumed) and an API key, or a username and password, then press
-**Connect**. Once connected, the form folds into a one-line bar with **Reload** and
-**Connection…**, and the next launch connects by itself when an API key is saved. The API key is the same one the Dispatcharr matcher uses
-([how to get it](#get-a-dispatcharr-api-key)).
+**Connect**. The API key is the same one the Dispatcharr matcher uses
+([how to get it](#get-a-dispatcharr-api-key)). Once connected, the form folds into a one-line bar
+with **Reload** and **Connection…**, and the next launch connects by itself when an API key is
+saved.
 
 ### Review and write
 
@@ -2494,16 +2521,16 @@ Dispatcharr address (port 9191 is assumed) and an API key, or a username and pas
 
 Working on many channels at once:
 
-- Select several channels with Cmd-click (Ctrl-click on Windows and Linux), Shift-click or
+- **Select** several channels with Cmd-click (Ctrl-click on Windows and Linux), Shift-click or
   Cmd/Ctrl-A, then use **Tick selected** or **Untick selected** to put them in or leave them out of
   the next Write. Clicking a channel's **Write** column, or pressing Space, toggles one.
 - **Tick all suggestions** ticks every suggestion on the selected channels, including the
   uncertain ones. **Mark reviewed** takes the selected channels out of Needs attention as they are.
-  The **Channels** menu (and right-click on a channel) has the same actions plus versions for
+- The **Channels** menu (and right-click on a channel) has the same actions plus versions for
   every channel shown, **Clear changes** and **Reset** (back to what the matcher ticked).
-- There is also a **Group** filter, a **Find** box (name, stream, channel number or a range like
-  `500-600`) and sortable columns. Columns can be dragged as wide as you like; the table scrolls
-  sideways. Drag the divider between the table and the panel to resize them.
+- **Group** filter, **Find** box (name, stream, channel number or a range like `500-600`) and
+  sortable columns. Columns can be dragged as wide as you like; the table scrolls sideways. Drag
+  the divider between the table and the panel to resize them.
 
 Anything the app can't do (nothing selected, everything already on the channel, and so on) is shown
 in red in the status line instead of silently doing nothing. **Help > Keyboard shortcuts** lists
@@ -2520,12 +2547,8 @@ every shortcut.
 
 ### Where data is stored
 
-The app keeps everything in one folder in your home directory:
-
-| System | Folder |
-|---|---|
-| macOS and Linux | `~/.dispatcharr_backup_streams/` |
-| Windows | `%USERPROFILE%\.dispatcharr_backup_streams\` |
+The app keeps everything in one folder in your home directory: `~/.dispatcharr_backup_streams/` on
+macOS and Linux, `%USERPROFILE%\.dispatcharr_backup_streams\` on Windows.
 
 The folder name starts with a dot, so it is hidden by default on macOS and Linux. Open it with
 **File > Open data and log folder**, with `open ~/.dispatcharr_backup_streams` (macOS) or
@@ -2557,13 +2580,13 @@ Many IPTV providers put a country or category prefix in front of every channel n
 `US| CNN HD`, `U.S| MSNBC HD` or `TV| MS NOW`. Dispatcharr can strip it with a regex find/replace,
 so Channels DVR shows `CNN HD` and you can sort channels alphabetically.
 
-**Find (Regex):**
+- **Find (Regex):**
 
-```
-^[^|]*\|\s*
-```
+  ```
+  ^[^|]*\|\s*
+  ```
 
-**Replace:** leave it empty.
+- **Replace:** leave it empty.
 
 It removes everything from the start of the name up to and including the first `|`, plus any
 spaces after it. Names without a `|` are left alone.
@@ -2575,7 +2598,10 @@ spaces after it. Names without a `|` are left alone.
 | `TV| MS NOW` | `MS NOW` |
 | `CNN HD` | `CNN HD` |
 
-Where you set it depends on how your channels were created.
+Where you set it depends on how your channels were created. Renaming only changes the name shown
+in Channels DVR. Gracenote station IDs, channel numbers, streams and backup streams are not
+affected, and the station ID matcher and backup streams apps ignore these prefixes when matching,
+so you can rename before or after using them.
 
 ### Channels created by Auto Channel Sync
 
@@ -2611,10 +2637,6 @@ for those as well.)
 5. Save. Dispatcharr renames all the selected channels in one go. Channels without a `|` in their
    name are left as they are, so it is safe to include them in the selection.
 
-Renaming only changes the name shown in Channels DVR. Gracenote station IDs, channel numbers,
-streams and backup streams are not affected, and the station ID matcher and backup streams apps
-ignore these prefixes when matching, so you can rename before or after using them.
-
 ## Disclaimer
 
 This is an unofficial community project. It is not affiliated with, endorsed by or supported by
@@ -2626,9 +2648,8 @@ Back up your Dispatcharr or m3u-editor database before bulk changes.
 
 ## Contributing
 
-This project does not accept issues or pull requests; both are turned off.
-
-You are welcome to fork, remix and build on it under the terms of the MIT license.
+This project does not accept issues or pull requests; both are turned off. You are welcome to
+fork, remix and build on it under the terms of the MIT license.
 
 ## License
 
