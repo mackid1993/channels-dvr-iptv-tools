@@ -1079,7 +1079,7 @@ These two blocks are generated from [`stream_profiles/hlsloop.py`](stream_profil
 # Why transcode? Every channel leaves Dispatcharr in the same format, so
 # a backup with a different frame rate never upsets the player, and the
 # video plays at its real speed, except while the reserve refills: if a
-# provider problem keeps the reserve below half for 60 seconds, video and
+# provider problem keeps the reserve below half for 75 seconds, video and
 # audio play 3% slower together (pitch unchanged) until it is back to
 # three quarters. Costs a few seconds more delay
 # and some GPU time. Give the Dispatcharr container a GPU
@@ -1181,7 +1181,7 @@ def rstep(now, qs, lo, hi, win):
  if SPD == 1.0:
   if qm >= lo:lowt = None;return
   if lowt is None:lowt = now
-  if now - lowt < 60 or now - ltk < 60:return
+  if now - lowt < 75 or now - ltk < 60:return
   SPD = SLOW;lowt = None;ltk = now;RP[1] = now;RP[0] = "reserve down to %.0fs; playing 3 percent slower, pitch unchanged, until it is back to %.0fs" % (qm, hi)
  elif qm >= hi:SPD = 1.0;ltk = now;RP[1] = now;RP[0] = "reserve back to %.0fs; back to real speed" % qm
 def dif(a, b):return (a - b + WR / 2) % WR - WR / 2
