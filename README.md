@@ -1136,7 +1136,9 @@ try:import requests
 except ImportError:print("[hlsloop] python requests module not found", file=sys.stderr);sys.exit(1)
 src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:cdvr = "http://" + cdvr
-DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = DISPATCHARR_API_KEY.strip()
+DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/")
+if "://" not in DURL:DURL = "http://" + DURL
+AKEY = DISPATCHARR_API_KEY.strip()
 def dapi(path):
  if not AKEY:raise ValueError("DISPATCHARR_API_KEY is empty at the top of the profile")
  r = requests.get(DURL + path, headers={"X-API-Key": AKEY, "Accept": "application/json"}, timeout=5)
@@ -1282,9 +1284,9 @@ def pump():
     with fql:fq.popleft()
     try:p.wait(1)
     except Exception:pass
-    shut.pop(p.pid, None)
+    shut.pop(p.pid, None);b = b"\xff" * ((188 - ob % 188) % 188)
    elif p.poll() is not None:time.sleep(0.05)
-   continue
+   if not b:continue
   try:
    while b:n = os.write(1, b);b = b[n:];ob += n;OWT[0] = mono()
    if ka is not None:inc("ka", mono() - ka);log("output: video flowing again after %.1fs without video" % (mono() - ka));ka = None
@@ -1299,6 +1301,8 @@ def put(b):
  except Exception as e:
   if gone():bye()
   remux("remuxer rejected data (%s)" % e)
+  try:ff.stdin.write(b);ff.stdin.flush()
+  except Exception:pass
 def attrs(x):return {k: v.strip(chr(34)) for k, v in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}
 def tsig(d):
  try:
@@ -1874,7 +1878,9 @@ try:import requests
 except ImportError:print("[tsloop stream] python requests module not found", file=sys.stderr);sys.exit(1)
 src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:cdvr = "http://" + cdvr
-DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = DISPATCHARR_API_KEY.strip()
+DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/")
+if "://" not in DURL:DURL = "http://" + DURL
+AKEY = DISPATCHARR_API_KEY.strip()
 def dapi(path):
  if not AKEY:raise ValueError("DISPATCHARR_API_KEY is empty at the top of the profile")
  r = requests.get(DURL + path, headers={"X-API-Key": AKEY, "Accept": "application/json"}, timeout=5)
