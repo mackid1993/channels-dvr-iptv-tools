@@ -976,19 +976,11 @@ This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsl
 <!-- BEGIN hlsloop -->
 ```text
 -u -c '# ======================================================================
-# SETTINGS
+# SETTINGS: fill these in at the bottom of this block, then save.
 #
-# Easiest: set them once as environment variables on the Dispatcharr
-# container (the README shows how for Docker, Compose, Unraid and the
-# Debian install). Then a new version of this profile is just paste and
-# save, with nothing to fill in again:
-#   CHANNELS_DVR=http://192.168.1.50:8089
-#   DISPATCHARR_API_KEY=your-api-key
-#   CDVR_TRANSCODE=1080p60
-# An environment variable always wins over the same setting below.
-#
-# Or fill in the settings at the bottom of this block instead. Use
-# double quotes, never single quotes: a single quote breaks the profile.
+# Use double quotes, never single quotes: a single quote breaks the
+# profile. When you paste a newer version of this profile, copy your
+# settings across from the old one.
 #
 # Leave a setting empty and the channel still plays; the features that
 # need it switch off and the Dispatcharr log says why.
@@ -1027,18 +1019,16 @@ This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsl
 #
 # ------------------------------------------------------------------------
 # 1. DISPATCHARR_API_KEY (needed for failover, shared viewers, recordings)
-#    Environment variable: DISPATCHARR_API_KEY
 #    In Dispatcharr open Users, edit your user, press Generate API Key,
 #    and paste the key between the quotes. This is an admin-level key:
 #    anyone who sees it can manage Dispatcharr. To replace it, generate a
-#    new one in Users and update it here or in the environment variable.
+#    new one in Users and paste it here.
 #    Example: DISPATCHARR_API_KEY = "abc123..."
 # ------------------------------------------------------------------------
 DISPATCHARR_API_KEY = ""  # <- paste your Dispatcharr API key here
 #
 # ------------------------------------------------------------------------
 # 2. CHANNELS_DVR (optional, found automatically when the key is set)
-#    Environment variable: CHANNELS_DVR
 #    Your Channels DVR server as http://IP:PORT. Leave it empty and the
 #    profile finds the server from the Dispatcharr connection list.
 #    Fill it in if that fails, or to skip the lookup. The port is 8089
@@ -1049,7 +1039,6 @@ CHANNELS_DVR = ""  # <- your Channels DVR address, or leave empty
 #
 # ------------------------------------------------------------------------
 # 3. TRANSCODE (optional, see the TRANSCODE help above)
-#    Environment variable: CDVR_TRANSCODE
 #    "off" passes streams through untouched. With a GPU, "1080p60" is
 #    the usual choice. 50 Hz countries use "1080p50", "1080p25",
 #    "720p50" or "720p25".
@@ -1059,7 +1048,6 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 #
 # ------------------------------------------------------------------------
 # 4. DISPATCHARR_URL (advanced, almost everyone leaves this empty)
-#    Environment variable: DISPATCHARR_URL
 #    The address the profile uses to reach the Dispatcharr API. The
 #    profile runs inside Dispatcharr, so when this is empty it uses
 #    http://127.0.0.1:9191, which is Dispatcharr itself. Only fill it in
@@ -1069,14 +1057,14 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 DISPATCHARR_URL = ""  # <- leave empty unless you changed the Dispatcharr port
 #
 # ========================== END OF SETTINGS ===========================
-TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(__import__("os").environ.get("CDVR_TRANSCODE") or TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 4.0;import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
+TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 4.0;import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found", file=sys.stderr);sys.exit(1)
-src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (os.environ.get("CHANNELS_DVR", "") or CHANNELS_DVR or (sys.argv[4] if len(sys.argv) > 4 else "")).strip().rstrip("/")
+src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:cdvr = "http://" + cdvr
-DURL = (os.environ.get("DISPATCHARR_URL", "").strip() or DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = (os.environ.get("DISPATCHARR_API_KEY", "") or DISPATCHARR_API_KEY).strip()
+DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = DISPATCHARR_API_KEY.strip()
 def dapi(path):
- if not AKEY:raise ValueError("DISPATCHARR_API_KEY is not set (environment variable or top of the profile)")
+ if not AKEY:raise ValueError("DISPATCHARR_API_KEY is empty at the top of the profile")
  r = requests.get(DURL + path, headers={"X-API-Key": AKEY, "Accept": "application/json"}, timeout=5)
  if r.status_code in (401, 403):raise ValueError("Dispatcharr refused the API key (HTTP %d); check DISPATCHARR_API_KEY" % r.status_code)
  r.raise_for_status();return r.json()
@@ -1750,19 +1738,11 @@ This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloo
 <!-- BEGIN tsloop -->
 ```text
 -u -c '# ======================================================================
-# SETTINGS
+# SETTINGS: fill these in at the bottom of this block, then save.
 #
-# Easiest: set them once as environment variables on the Dispatcharr
-# container (the README shows how for Docker, Compose, Unraid and the
-# Debian install). Then a new version of this profile is just paste and
-# save, with nothing to fill in again:
-#   CHANNELS_DVR=http://192.168.1.50:8089
-#   DISPATCHARR_API_KEY=your-api-key
-#   CDVR_TRANSCODE=1080p60
-# An environment variable always wins over the same setting below.
-#
-# Or fill in the settings at the bottom of this block instead. Use
-# double quotes, never single quotes: a single quote breaks the profile.
+# Use double quotes, never single quotes: a single quote breaks the
+# profile. When you paste a newer version of this profile, copy your
+# settings across from the old one.
 #
 # Leave a setting empty and the channel still plays; the features that
 # need it switch off and the Dispatcharr log says why.
@@ -1801,18 +1781,16 @@ This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloo
 #
 # ------------------------------------------------------------------------
 # 1. DISPATCHARR_API_KEY (needed for failover, shared viewers, recordings)
-#    Environment variable: DISPATCHARR_API_KEY
 #    In Dispatcharr open Users, edit your user, press Generate API Key,
 #    and paste the key between the quotes. This is an admin-level key:
 #    anyone who sees it can manage Dispatcharr. To replace it, generate a
-#    new one in Users and update it here or in the environment variable.
+#    new one in Users and paste it here.
 #    Example: DISPATCHARR_API_KEY = "abc123..."
 # ------------------------------------------------------------------------
 DISPATCHARR_API_KEY = ""  # <- paste your Dispatcharr API key here
 #
 # ------------------------------------------------------------------------
 # 2. CHANNELS_DVR (optional, found automatically when the key is set)
-#    Environment variable: CHANNELS_DVR
 #    Your Channels DVR server as http://IP:PORT. Leave it empty and the
 #    profile finds the server from the Dispatcharr connection list.
 #    Fill it in if that fails, or to skip the lookup. The port is 8089
@@ -1823,7 +1801,6 @@ CHANNELS_DVR = ""  # <- your Channels DVR address, or leave empty
 #
 # ------------------------------------------------------------------------
 # 3. TRANSCODE (optional, see the TRANSCODE help above)
-#    Environment variable: CDVR_TRANSCODE
 #    "off" passes streams through untouched. With a GPU, "1080p60" is
 #    the usual choice. 50 Hz countries use "1080p50", "1080p25",
 #    "720p50" or "720p25".
@@ -1833,7 +1810,6 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 #
 # ------------------------------------------------------------------------
 # 4. DISPATCHARR_URL (advanced, almost everyone leaves this empty)
-#    Environment variable: DISPATCHARR_URL
 #    The address the profile uses to reach the Dispatcharr API. The
 #    profile runs inside Dispatcharr, so when this is empty it uses
 #    http://127.0.0.1:9191, which is Dispatcharr itself. Only fill it in
@@ -1843,14 +1819,14 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 DISPATCHARR_URL = ""  # <- leave empty unless you changed the Dispatcharr port
 #
 # ========================== END OF SETTINGS ===========================
-TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(__import__("os").environ.get("CDVR_TRANSCODE") or TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 8.0;import os, sys, time, json, signal, select, shutil, hashlib, threading, collections, subprocess as sp, re, urllib.parse as up
+TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 8.0;import os, sys, time, json, signal, select, shutil, hashlib, threading, collections, subprocess as sp, re, urllib.parse as up
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found", file=sys.stderr);sys.exit(1)
-src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = (os.environ.get("CHANNELS_DVR", "") or CHANNELS_DVR or (sys.argv[4] if len(sys.argv) > 4 else "")).strip().rstrip("/")
+src, ua = (sys.argv[1], sys.argv[2]);chid = sys.argv[3] if len(sys.argv) > 3 else "";cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:cdvr = "http://" + cdvr
-DURL = (os.environ.get("DISPATCHARR_URL", "").strip() or DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = (os.environ.get("DISPATCHARR_API_KEY", "") or DISPATCHARR_API_KEY).strip()
+DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/");AKEY = DISPATCHARR_API_KEY.strip()
 def dapi(path):
- if not AKEY:raise ValueError("DISPATCHARR_API_KEY is not set (environment variable or top of the profile)")
+ if not AKEY:raise ValueError("DISPATCHARR_API_KEY is empty at the top of the profile")
  r = requests.get(DURL + path, headers={"X-API-Key": AKEY, "Accept": "application/json"}, timeout=5)
  if r.status_code in (401, 403):raise ValueError("Dispatcharr refused the API key (HTTP %d); check DISPATCHARR_API_KEY" % r.status_code)
  r.raise_for_status();return r.json()
