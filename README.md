@@ -980,13 +980,19 @@ retune. You can delete the profile afterwards.
 These two blocks are generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
 <!-- BEGIN hlsloop -->
+
+**Part 1: settings.** Paste this first and fill it in. You only do this once.
+
 ```text
 -u -c '# ======================================================================
 # SETTINGS: fill these in at the bottom of this block, then save.
 #
 # Use double quotes, never single quotes: a single quote breaks the
-# profile. When you paste a newer version of this profile, copy your
-# settings across from the old one.
+# profile.
+#
+# TO UPDATE THIS PROFILE LATER: keep everything down to the END OF
+# SETTINGS line, delete everything below it, and paste the new CODE
+# block from the README in its place. Your settings stay as they are.
 #
 # Leave a setting empty and the channel still plays; the features that
 # need it switch off and the Dispatcharr log says why.
@@ -1061,6 +1067,12 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 DISPATCHARR_URL = ""  # <- leave empty unless you changed the Dispatcharr port
 #
 # ========================== END OF SETTINGS ===========================
+```
+
+**Part 2: code.** Paste this directly below part 1, in the same Parameters box. To update the profile later, delete everything below the `END OF SETTINGS` line and paste the new part 2 there.
+
+```text
+# ========== CODE: paste this below the END OF SETTINGS line ==========
 TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 4.0;import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
 try:import requests
 except ImportError:print("[hlsloop] python requests module not found", file=sys.stderr);sys.exit(1)
@@ -1735,13 +1747,19 @@ stuck feeds and the tuner-sharing head start.
 These two blocks are generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
 <!-- BEGIN tsloop -->
+
+**Part 1: settings.** Paste this first and fill it in. You only do this once.
+
 ```text
 -u -c '# ======================================================================
 # SETTINGS: fill these in at the bottom of this block, then save.
 #
 # Use double quotes, never single quotes: a single quote breaks the
-# profile. When you paste a newer version of this profile, copy your
-# settings across from the old one.
+# profile.
+#
+# TO UPDATE THIS PROFILE LATER: keep everything down to the END OF
+# SETTINGS line, delete everything below it, and paste the new CODE
+# block from the README in its place. Your settings stay as they are.
 #
 # Leave a setting empty and the channel still plays; the features that
 # need it switch off and the Dispatcharr log says why.
@@ -1816,6 +1834,12 @@ TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
 DISPATCHARR_URL = ""  # <- leave empty unless you changed the Dispatcharr port
 #
 # ========================== END OF SETTINGS ===========================
+```
+
+**Part 2: code.** Paste this directly below part 1, in the same Parameters box. To update the profile later, delete everything below the `END OF SETTINGS` line and paste the new part 2 there.
+
+```text
+# ========== CODE: paste this below the END OF SETTINGS line ==========
 TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")};TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""));TRANSCODE = TC_HEIGHT > 0;TC_LEAD = 8.0;import os, sys, time, json, signal, select, shutil, hashlib, threading, collections, subprocess as sp, re, urllib.parse as up
 try:import requests
 except ImportError:print("[tsloop stream] python requests module not found", file=sys.stderr);sys.exit(1)
