@@ -97,6 +97,8 @@ cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:
     cdvr = "http://" + cdvr
 DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/")
+if "://" not in DURL:
+    DURL = "http://" + DURL
 AKEY = DISPATCHARR_API_KEY.strip()
 
 def dapi(path):
@@ -408,9 +410,11 @@ def pump():
                 except Exception:
                     pass
                 shut.pop(p.pid, None)
+                b = b"\xff" * ((188 - ob % 188) % 188)
             elif p.poll() is not None:
                 time.sleep(0.05)
-            continue
+            if not b:
+                continue
         try:
             while b:
                 n = os.write(1, b)
@@ -443,6 +447,11 @@ def put(b):
         if gone():
             bye()
         remux("remuxer rejected data (%s)" % e)
+        try:
+            ff.stdin.write(b)
+            ff.stdin.flush()
+        except Exception:
+            pass
 
 def attrs(x):
     return {k: v.strip(chr(34)) for k, v in re.findall("([A-Z0-9-]+)=(\\\"[^\\\"]*\\\"|[^,]*)", x.split(":", 1)[1])}

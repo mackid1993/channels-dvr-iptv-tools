@@ -97,6 +97,8 @@ cdvr = CHANNELS_DVR.strip().rstrip("/")
 if cdvr and "://" not in cdvr:
     cdvr = "http://" + cdvr
 DURL = (DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/")
+if "://" not in DURL:
+    DURL = "http://" + DURL
 AKEY = DISPATCHARR_API_KEY.strip()
 
 def dapi(path):
