@@ -435,7 +435,7 @@ own section with an explanation, an example, and a `# <-` note saying what to pu
 | Setting | What to put there | Needed for |
 |---|---|---|
 | `DISPATCHARR_API_KEY` | Your Dispatcharr API key: **Users**, edit your user, **Generate API Key** | Failover to backup streams, finding the channel in Channels DVR, recording extensions |
-| `CHANNELS_DVR` | `http://IP:8089` of your Channels DVR server. Optional: if empty, the profile finds the server through Dispatcharr's API | Shared-viewer head start, recording extensions |
+| `CHANNELS_DVR` | `http://IP:8089` of your Channels DVR server (port 8089 unless you changed it) | Shared-viewer head start, recording extensions |
 | `TRANSCODE` | `off`, `1080p60`, `1080p30`, `720p60`, `720p30` (or `1080p50`, `1080p25`, `720p50`, `720p25`). See [Transcoding (optional)](#transcoding-optional) | Transcoding |
 | `DISPATCHARR_URL` | Leave empty. Defaults to `http://127.0.0.1:9191` (Dispatcharr itself). Only set it if you changed Dispatcharr's web port | Reaching the Dispatcharr API |
 
@@ -448,8 +448,7 @@ own section with an explanation, an example, and a `# <-` note saying what to pu
 Leave a setting empty and the channel still plays; the features that need it switch off and
 Dispatcharr's log says why (for example `could not read backup streams (DISPATCHARR_API_KEY is empty
 at the top of the profile)`). The profiles reach Dispatcharr only through its public API with this
-key (`/api/channels/channels/<id>/streams/`, `/api/channels/channels/<id>/`, and
-`/proxy/ts/status/<channel>` when `CHANNELS_DVR` is empty).
+key (`/api/channels/channels/<id>/streams/` and `/api/channels/channels/<id>/`).
 
 ## Recordings
 
@@ -696,8 +695,8 @@ encoder does:
   too small to see or hear. The players' extra cushion slowly moves back into the reserve, about
   10 seconds every 17 minutes, without ever pausing the output. Tuning the channel fresh starts
   with the full reserve.
-- **Finds the channel in Channels DVR on its own.** It finds your Channels DVR server from
-  Dispatcharr's client list (the client whose user agent is Channels DVR), finds the Channels DVR
+- **Finds the channel in Channels DVR on its own.** Using the `CHANNELS_DVR` address from the
+  profile's settings, it finds the Channels DVR
   source whose URL is a Dispatcharr M3U output (`/output/m3u/...`), and locates this channel in
   that playlist by its Dispatcharr UUID. Channels DVR lists an M3U source's channels in playlist
   order, so the same position gives the Channels DVR channel number. It checks that the counts and
@@ -842,11 +841,10 @@ it at its default.
   M3U output URL (`http://DISPATCHARR:9191/output/m3u/...`) and **Stream Format: MPEG-TS**, with
   Dispatcharr's output format left on **MPEG-TS** (see [HLS in, MPEG-TS out](#hls-in-mpeg-ts-out)).
   Dispatcharr must be able to reach the Channels DVR server on port 8089.
-- **Dispatcharr 0.32 or newer** (tested on 0.32.0). The profile uses Python, the `requests`,
-  `psycopg` and `redis` modules and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is
-  installed. It reads each channel's UUID and backup streams from Dispatcharr's own database, and
-  its client list from Dispatcharr's Redis, using settings Dispatcharr already passes to its
-  stream processes.
+- **Dispatcharr 0.32 or newer** (tested on 0.33.0). The profile uses Python, the `requests`
+  module and `ffmpeg`, all part of Dispatcharr's Docker image. Nothing is installed. It reads each
+  channel's UUID and backup streams through Dispatcharr's public API, using the API key in its
+  settings (see [Stream profile settings](#stream-profile-settings)).
 - **Your provider must offer HLS** for the channels. **Use an Xtream Codes account if you can**
   (see [Use an Xtream Codes account](#use-an-xtream-codes-account)): its `.ts` addresses are
   switched to their `.m3u8` form automatically. Other providers' stream URLs must return an HLS playlist (usually they end in `.m3u8`). This is only what Dispatcharr receives from the provider; what it
