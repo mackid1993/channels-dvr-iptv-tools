@@ -2,8 +2,11 @@
 # SETTINGS: fill these in at the bottom of this block, then save.
 #
 # Use double quotes, never single quotes: a single quote breaks the
-# profile. When you paste a newer version of this profile, copy your
-# settings across from the old one.
+# profile.
+#
+# TO UPDATE THIS PROFILE LATER: keep everything down to the END OF
+# SETTINGS line, delete everything below it, and paste the new CODE
+# block from the README in its place. Your settings stay as they are.
 #
 # Leave a setting empty and the channel still plays; the features that
 # need it switch off and the Dispatcharr log says why.

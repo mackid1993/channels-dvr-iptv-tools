@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Minify a stream profile into the one-line form pasted into Dispatcharr.
 
-Usage: minify_profile.py SOURCE.py
+Usage: minify_profile.py SOURCE.py [--settings | --code]
+
+With no option, prints the whole Parameters value. --settings prints only the
+first part (from -u -c ' down to the END OF SETTINGS line) and --code prints
+only the rest (from the CODE marker line to the closing placeholders). Pasted
+one after the other, the two parts are exactly the whole value.
 
 Prints the full Dispatcharr Parameters value:
     -u -c '<minified code>' {streamUrl} {userAgent} {channelId}
@@ -130,8 +135,12 @@ def minify(code):
     return "\n".join(res)
 
 
+CODE_MARK = "# ========== CODE: paste this below the END OF SETTINGS line =========="
+
+
 def main():
     path = sys.argv[1]
+    part = sys.argv[2] if len(sys.argv) > 2 else ""
     code = open(path, encoding="utf-8").read()
     settings, rest = split_settings(code)
     mini = "\n".join(settings + [minify(rest)])
@@ -142,7 +151,20 @@ def main():
             sys.exit("%s: settings line was not kept on its own line: %s" % (path, line))
     if "'" in mini:
         sys.exit("%s: minified code contains a single quote" % path)
-    sys.stdout.write("-u -c '" + mini + "' {streamUrl} {userAgent} {channelId}\n")
+    if not any(END_MARK in l for l in settings):
+        sys.exit("%s: no END OF SETTINGS line" % path)
+    code_part = CODE_MARK + "\n" + minify(rest)
+    whole = "\n".join(settings) + "\n" + code_part
+    if ast.dump(ast.parse(whole)) != ast.dump(ast.parse(code)):
+        sys.exit("%s: settings + code parts are not the same program as the source" % path)
+    head = "-u -c '"
+    tail = "' {streamUrl} {userAgent} {channelId}"
+    if part == "--settings":
+        sys.stdout.write(head + "\n".join(settings) + "\n")
+    elif part == "--code":
+        sys.stdout.write(code_part + tail + "\n")
+    else:
+        sys.stdout.write(head + whole + tail + "\n")
 
 
 if __name__ == "__main__":

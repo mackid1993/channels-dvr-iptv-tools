@@ -443,7 +443,8 @@ own section with an explanation, an example, and a `# <-` note saying what to pu
 > - **Use double quotes, never single quotes.** A single quote breaks the profile.
 > - **The API key is an admin-level key:** anyone who has it can manage Dispatcharr. To replace it,
 >   generate a new key under **Users** and paste it into the profile.
-> - **When you paste a newer version of a profile, copy your settings across** from the old one.
+> - **To update a profile, replace only part 2** (everything below the `END OF SETTINGS` line);
+>   your settings in part 1 stay as they are.
 
 Leave a setting empty and the channel still plays; the features that need it switch off and
 Dispatcharr's log says why (for example `could not read backup streams (DISPATCHARR_API_KEY is empty
@@ -871,14 +872,21 @@ date it asks Channels DVR to refresh that source, and it lengthens recordings ma
    python
    ```
 
-4. **Parameters:** copy the **whole** block under
-   [HLS profile parameters](#hls-profile-parameters) below (on GitHub, use the copy button in the
-   block's top-right corner) and paste it into the Parameters box.
-   - It starts with `-u -c '` and ends with `' {streamUrl} {userAgent} {channelId}`.
-   - Paste it as is. Don't edit it, don't join the lines, and don't add or remove quotes. The
-     program is wrapped in single quotes and contains none itself, which is what lets it sit in
-     the Parameters box safely.
+4. **Parameters:** the profile comes in two parts under
+   [HLS profile parameters](#hls-profile-parameters) below. On GitHub, use the copy button in each
+   block's top-right corner.
+   - **Part 1, settings:** paste it into the Parameters box and fill in the settings at the bottom
+     of it (see [Stream profile settings](#stream-profile-settings)). It starts with `-u -c '`.
+   - **Part 2, code:** paste it directly below part 1, in the same box. It ends with
+     `' {streamUrl} {userAgent} {channelId}`.
+   - Don't edit part 2, don't join its lines, and don't add or remove quotes. The program is
+     wrapped in single quotes and contains none itself, which is what lets it sit in the
+     Parameters box safely. In the settings, use double quotes only.
 5. Press **Save**.
+
+**To update a profile later:** open it in Dispatcharr, keep everything down to the
+`END OF SETTINGS` line, delete everything below it, paste the new part 2 in its place, and save.
+Your settings stay as they are. Retune for the new version to take effect.
 
 ### Turn it on
 
@@ -969,7 +977,7 @@ retune. You can delete the profile afterwards.
 
 ### HLS profile parameters
 
-This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not this block.
+These two blocks are generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
 <!-- BEGIN hlsloop -->
 ```text
@@ -1724,7 +1732,7 @@ stuck feeds and the tuner-sharing head start.
 
 ### MPEG-TS profile parameters
 
-This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not this block.
+These two blocks are generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloop.py) by `scripts/build-profiles.sh`, which GitHub Actions runs on every push. To change the profile, edit the source file, not these blocks.
 
 <!-- BEGIN tsloop -->
 ```text
