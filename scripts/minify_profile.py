@@ -6,7 +6,8 @@ Usage: minify_profile.py SOURCE.py
 Prints the full Dispatcharr Parameters value:
     -u -c '<minified code>' {streamUrl} {userAgent} {channelId}
 
-The leading comment block of SOURCE (the settings help) is kept as is. Everything
+The settings block at the top of SOURCE (help comments plus the setting lines, up to
+the "END OF SETTINGS" marker) is kept as is. Everything
 else is re-emitted from the parsed program with one-space indentation, comments and
 blank lines dropped, and consecutive simple statements joined with ";".
 
@@ -25,13 +26,27 @@ COMPOUND = ("if ", "elif ", "else:", "for ", "while ", "try:", "except", "finall
             "with ", "def ", "class ", "async ", "@")
 
 
-def header(src):
+END_MARK = "END OF SETTINGS"
+
+
+def split_settings(src):
+    """Return (settings_lines, rest_source).
+
+    The settings block is everything up to and including the comment line that
+    contains END OF SETTINGS. It is kept verbatim (comments, one setting per
+    line) so users can see and edit it. Without the marker, only the leading
+    comment block is kept verbatim, as before.
+    """
+    lines = src.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("#") and END_MARK in line:
+            return lines[:i + 1], "\n".join(lines[i + 1:]) + "\n"
     out = []
-    for line in src.splitlines():
+    for line in lines:
         if not line.startswith("#"):
             break
         out.append(line)
-    return out
+    return out, "\n".join(lines[len(out):]) + "\n"
 
 
 def bytes_literal(b):
@@ -118,9 +133,13 @@ def minify(code):
 def main():
     path = sys.argv[1]
     code = open(path, encoding="utf-8").read()
-    mini = "\n".join(header(code) + [minify(code)])
+    settings, rest = split_settings(code)
+    mini = "\n".join(settings + [minify(rest)])
     if ast.dump(ast.parse(mini)) != ast.dump(ast.parse(code)):
         sys.exit("%s: minified code is not the same program as the source" % path)
+    for line in settings:
+        if line not in mini.splitlines():
+            sys.exit("%s: settings line was not kept on its own line: %s" % (path, line))
     if "'" in mini:
         sys.exit("%s: minified code contains a single quote" % path)
     sys.stdout.write("-u -c '" + mini + "' {streamUrl} {userAgent} {channelId}\n")

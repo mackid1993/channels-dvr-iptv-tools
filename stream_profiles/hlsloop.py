@@ -1,4 +1,21 @@
 # ======================================================================
+# SETTINGS
+#
+# Easiest: set them once as environment variables on the Dispatcharr
+# container (the README shows how for Docker, Compose, Unraid and the
+# Debian install). Then a new version of this profile is just paste and
+# save, with nothing to fill in again:
+#   CHANNELS_DVR=http://192.168.1.50:8089
+#   DISPATCHARR_API_KEY=your-api-key
+#   CDVR_TRANSCODE=1080p60
+# An environment variable always wins over the same setting below.
+#
+# Or fill in the settings at the bottom of this block instead. Use
+# double quotes, never single quotes: a single quote breaks the profile.
+#
+# Leave a setting empty and the channel still plays; the features that
+# need it switch off and the Dispatcharr log says why.
+#
 # TRANSCODE: re-encode every stream to one format, or pass it through.
 #
 #   TRANSCODE="off"       pass through untouched (default, no extra CPU/GPU)
@@ -30,9 +47,53 @@
 # (/dev/dri for Intel or AMD, the NVIDIA runtime for NVIDIA); the README
 # shows how. Without one it falls back to the CPU.
 # ======================================================================
-TRANSCODE = "off"
+#
+# ------------------------------------------------------------------------
+# 1. DISPATCHARR_API_KEY (needed for failover, shared viewers, recordings)
+#    Environment variable: DISPATCHARR_API_KEY
+#    In Dispatcharr open Users, edit your user, press Generate API Key,
+#    and paste the key between the quotes. This is an admin-level key:
+#    anyone who sees it can manage Dispatcharr. To replace it, generate a
+#    new one in Users and update it here or in the environment variable.
+#    Example: DISPATCHARR_API_KEY = "abc123..."
+# ------------------------------------------------------------------------
+DISPATCHARR_API_KEY = ""  # <- paste your Dispatcharr API key here
+#
+# ------------------------------------------------------------------------
+# 2. CHANNELS_DVR (optional, found automatically when the key is set)
+#    Environment variable: CHANNELS_DVR
+#    Your Channels DVR server as http://IP:PORT. Leave it empty and the
+#    profile finds the server from the Dispatcharr connection list.
+#    Fill it in if that fails, or to skip the lookup. The port is 8089
+#    unless you changed it.
+#    Example: CHANNELS_DVR = "http://192.168.1.50:8089"
+# ------------------------------------------------------------------------
+CHANNELS_DVR = ""  # <- your Channels DVR address, or leave empty
+#
+# ------------------------------------------------------------------------
+# 3. TRANSCODE (optional, see the TRANSCODE help above)
+#    Environment variable: CDVR_TRANSCODE
+#    "off" passes streams through untouched. With a GPU, "1080p60" is
+#    the usual choice. 50 Hz countries use "1080p50", "1080p25",
+#    "720p50" or "720p25".
+#    Example: TRANSCODE = "1080p60"
+# ------------------------------------------------------------------------
+TRANSCODE = "off"  # <- "off", "1080p60", "1080p30", "720p60" or "720p30"
+#
+# ------------------------------------------------------------------------
+# 4. DISPATCHARR_URL (advanced, almost everyone leaves this empty)
+#    Environment variable: DISPATCHARR_URL
+#    The address the profile uses to reach the Dispatcharr API. The
+#    profile runs inside Dispatcharr, so when this is empty it uses
+#    http://127.0.0.1:9191, which is Dispatcharr itself. Only fill it in
+#    if you changed the Dispatcharr web port, for example
+#    "http://127.0.0.1:9292".
+# ------------------------------------------------------------------------
+DISPATCHARR_URL = ""  # <- leave empty unless you changed the Dispatcharr port
+#
+# ========================== END OF SETTINGS ===========================
 TCP = {"1080p60": (1080, 59.94, "6M"), "1080p30": (1080, 29.97, "4.5M"), "720p60": (720, 59.94, "4.5M"), "720p30": (720, 29.97, "3M"), "1080p50": (1080, 50, "6M"), "1080p25": (1080, 25, "4.5M"), "720p50": (720, 50, "4.5M"), "720p25": (720, 25, "3M")}
-TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(TRANSCODE).lower().strip(), (0, 0, ""))
+TC_HEIGHT, TC_FPS, TC_VBITRATE = TCP.get(str(__import__("os").environ.get("CDVR_TRANSCODE") or TRANSCODE).lower().strip(), (0, 0, ""))
 TRANSCODE = TC_HEIGHT > 0
 TC_LEAD = 4.0
 import os, sys, time, json, signal, re, select, shutil, hashlib, threading, collections, subprocess as sp, urllib.parse as up
@@ -43,7 +104,20 @@ except ImportError:
     sys.exit(1)
 src, ua = (sys.argv[1], sys.argv[2])
 chid = sys.argv[3] if len(sys.argv) > 3 else ""
-cdvr = (sys.argv[4] if len(sys.argv) > 4 else os.environ.get("CHANNELS_DVR", "")).strip().rstrip("/")
+cdvr = (os.environ.get("CHANNELS_DVR", "") or CHANNELS_DVR or (sys.argv[4] if len(sys.argv) > 4 else "")).strip().rstrip("/")
+if cdvr and "://" not in cdvr:
+    cdvr = "http://" + cdvr
+DURL = (os.environ.get("DISPATCHARR_URL", "").strip() or DISPATCHARR_URL.strip() or "http://127.0.0.1:%s" % os.environ.get("DISPATCHARR_PORT", "9191")).rstrip("/")
+AKEY = (os.environ.get("DISPATCHARR_API_KEY", "") or DISPATCHARR_API_KEY).strip()
+
+def dapi(path):
+    if not AKEY:
+        raise ValueError("DISPATCHARR_API_KEY is not set (environment variable or top of the profile)")
+    r = requests.get(DURL + path, headers={"X-API-Key": AKEY, "Accept": "application/json"}, timeout=5)
+    if r.status_code in (401, 403):
+        raise ValueError("Dispatcharr refused the API key (HTTP %d); check DISPATCHARR_API_KEY" % r.status_code)
+    r.raise_for_status()
+    return r.json()
 HSX = re.compile("(/live/[^/?]+/[^/?]+/[0-9]+)\\.ts(?=$|\\?)")
 
 def hsu(u):
@@ -538,10 +612,7 @@ def feeds():
     if not chid.isdigit():
         return [src]
     try:
-        import psycopg
-        e = os.environ.get
-        with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:
-            urls = [hsu(u) for u, in c.execute("select s.url from dispatcharr_channels_channelstream cs join dispatcharr_channels_stream s on s.id=cs.stream_id where cs.channel_id=%s order by cs.order", (int(chid),)).fetchall() if u]
+        urls = [hsu(u) for u in (x.get("url") for x in dapi("/api/channels/channels/%d/streams/" % int(chid))) if u]
     except Exception as x:
         log("could not read backup streams (%s)" % x)
         return [src]
@@ -776,11 +847,9 @@ def watch():
                 jfail = True
                 log("recording: could not check or extend recordings (%s); will keep trying quietly" % str(x)[:80])
     try:
-        import psycopg
-        with psycopg.connect(dbname=e("POSTGRES_DB", "dispatcharr"), user=e("POSTGRES_USER", "dispatch"), password=e("POSTGRES_PASSWORD", ""), host=e("POSTGRES_HOST", "localhost"), port=int(e("POSTGRES_PORT", "5432")), connect_timeout=3) as c:
-            uid = str(c.execute("select uuid from dispatcharr_channels_channel where id=%s", (int(chid),)).fetchone()[0])
+        uid = str(dapi("/api/channels/channels/%d/" % int(chid))["uuid"])
     except Exception as x:
-        say("db", "off (could not read this channel id: %s)" % x)
+        say("db", "off (could not read this channel from Dispatcharr: %s)" % x)
         return
 
     def nm(l):
@@ -789,16 +858,15 @@ def watch():
     while run:
         try:
             if not base:
-                import redis
-                rd = redis.Redis(host=e("REDIS_HOST", "localhost"), port=int(e("REDIS_PORT", "6379")), db=int(e("REDIS_DB", "0")), password=e("REDIS_PASSWORD") or None, socket_timeout=2)
-                for m in rd.smembers("live:channel:%s:clients" % uid):
-                    h = rd.hgetall("live:channel:%s:clients:%s" % (uid, m.decode()))
-                    if b"channels-dvr" in h.get(b"user_agent", b"").lower():
-                        base = "http://%s:8089" % h[b"ip_address"].decode()
+                for c_ in dapi("/proxy/ts/status/%s" % uid).get("clients") or []:
+                    ip_ = str(c_.get("ip_address") or "")
+                    if "channels-dvr" in str(c_.get("user_agent", "")).lower() and ip_ not in ("", "unknown"):
+                        base = "http://%s:8089" % ip_
+                        log("viewer buffer: found Channels DVR at %s (set CHANNELS_DVR to skip this lookup)" % base)
                         break
                 if not base:
                     if mono() - t0 > 120:
-                        say("nocd", "waiting (no Channels DVR client on this stream yet)")
+                        say("nocd", "waiting (no Channels DVR client on this stream yet; set CHANNELS_DVR if this persists)")
                         time.sleep(30)
                         continue
                     time.sleep(5)
