@@ -1026,14 +1026,12 @@ This block is generated from [`stream_profiles/hlsloop.py`](stream_profiles/hlsl
 DISPATCHARR_API_KEY = ""  # <- paste your Dispatcharr API key here
 #
 # ------------------------------------------------------------------------
-# 2. CHANNELS_DVR (optional, found automatically when the key is set)
-#    Your Channels DVR server as http://IP:PORT. Leave it empty and the
-#    profile finds the server from the Dispatcharr connection list.
-#    Fill it in if that fails, or to skip the lookup. The port is 8089
-#    unless you changed it.
+# 2. CHANNELS_DVR (needed for shared viewers and recordings)
+#    Your Channels DVR server as http://IP:PORT. Find the IP in Channels
+#    DVR under Settings; the port is 8089 unless you changed it.
 #    Example: CHANNELS_DVR = "http://192.168.1.50:8089"
 # ------------------------------------------------------------------------
-CHANNELS_DVR = ""  # <- your Channels DVR address, or leave empty
+CHANNELS_DVR = ""  # <- your Channels DVR address, e.g. "http://192.168.1.50:8089"
 #
 # ------------------------------------------------------------------------
 # 3. TRANSCODE (optional, see the TRANSCODE help above)
@@ -1347,7 +1345,9 @@ def cushlim():dp = dep or 3 * tgt;return max(min(3 * tgt, dp - min(CL + xb, clca
 def watch():
  global xb, pk, lj
  if not chid.isdigit():return
- e = os.environ.get;w = requests.Session();base = cdvr;dev = None;num = None;tmap = -1000000000.0;seen = None;t0 = mono();fails = 0;said = set();tj = -1000000000.0;jerr = set();jfail = False;og = None;jt = None;JF = ("/data" if os.access("/data", os.W_OK) else "/tmp") + "/hlsloop-jobs-%s.json" % chid
+ e = os.environ.get;w = requests.Session();base = cdvr
+ if not base:log("viewer buffer: off (CHANNELS_DVR is empty at the top of the profile)");return
+ dev = None;num = None;tmap = -1000000000.0;seen = None;t0 = mono();fails = 0;said = set();tj = -1000000000.0;jerr = set();jfail = False;og = None;jt = None;JF = ("/data" if os.access("/data", os.W_OK) else "/tmp") + "/hlsloop-jobs-%s.json" % chid
  try:
   for f_ in os.listdir(os.path.dirname(JF)):
    p_ = os.path.join(os.path.dirname(JF), f_)
@@ -1385,13 +1385,6 @@ def watch():
  def nm(l):x = re.sub("\\\"[^\\\"]*\\\"", "", l);return x.split(",", 1)[1].strip() if "," in x else ""
  while run:
   try:
-   if not base:
-    for c_ in dapi("/proxy/ts/status/%s" % uid).get("clients") or []:
-     ip_ = str(c_.get("ip_address") or "")
-     if "channels-dvr" in str(c_.get("user_agent", "")).lower() and ip_ not in ("", "unknown"):base = "http://%s:8089" % ip_;log("viewer buffer: found Channels DVR at %s (set CHANNELS_DVR to skip this lookup)" % base);break
-    if not base:
-     if mono() - t0 > 120:say("nocd", "waiting (no Channels DVR client on this stream yet; set CHANNELS_DVR if this persists)");time.sleep(30);continue
-     time.sleep(5);continue
    if mono() - tmap > 300:
     tmap = mono();num = dev = None;st = w.get(base + "/settings", timeout=5).json()
     for k, v in st.items():
@@ -1788,14 +1781,12 @@ This block is generated from [`stream_profiles/tsloop.py`](stream_profiles/tsloo
 DISPATCHARR_API_KEY = ""  # <- paste your Dispatcharr API key here
 #
 # ------------------------------------------------------------------------
-# 2. CHANNELS_DVR (optional, found automatically when the key is set)
-#    Your Channels DVR server as http://IP:PORT. Leave it empty and the
-#    profile finds the server from the Dispatcharr connection list.
-#    Fill it in if that fails, or to skip the lookup. The port is 8089
-#    unless you changed it.
+# 2. CHANNELS_DVR (needed for shared viewers and recordings)
+#    Your Channels DVR server as http://IP:PORT. Find the IP in Channels
+#    DVR under Settings; the port is 8089 unless you changed it.
 #    Example: CHANNELS_DVR = "http://192.168.1.50:8089"
 # ------------------------------------------------------------------------
-CHANNELS_DVR = ""  # <- your Channels DVR address, or leave empty
+CHANNELS_DVR = ""  # <- your Channels DVR address, e.g. "http://192.168.1.50:8089"
 #
 # ------------------------------------------------------------------------
 # 3. TRANSCODE (optional, see the TRANSCODE help above)
@@ -2049,7 +2040,9 @@ def clcap():return max(CL, dmx - STALL - RLOW)
 def watch():
  global xb, vpk, vlj, xo
  if not chid.isdigit():return
- e = os.environ.get;w = requests.Session();base = cdvr;dev = None;num = None;tmap = -1000000000.0;seen = None;t0 = mono();fails = 0;said = set();tj = -1000000000.0;jerr = set();jfail = False;og = None;jt = None;JF = ("/data" if os.access("/data", os.W_OK) else "/tmp") + "/tsloop-jobs-%s.json" % chid
+ e = os.environ.get;w = requests.Session();base = cdvr
+ if not base:log("viewer buffer: off (CHANNELS_DVR is empty at the top of the profile)");return
+ dev = None;num = None;tmap = -1000000000.0;seen = None;t0 = mono();fails = 0;said = set();tj = -1000000000.0;jerr = set();jfail = False;og = None;jt = None;JF = ("/data" if os.access("/data", os.W_OK) else "/tmp") + "/tsloop-jobs-%s.json" % chid
  try:
   for f_ in os.listdir(os.path.dirname(JF)):
    p_ = os.path.join(os.path.dirname(JF), f_)
@@ -2087,13 +2080,6 @@ def watch():
  def nm(l):x = re.sub("\\\"[^\\\"]*\\\"", "", l);return x.split(",", 1)[1].strip() if "," in x else ""
  while run:
   try:
-   if not base:
-    for c_ in dapi("/proxy/ts/status/%s" % uid).get("clients") or []:
-     ip_ = str(c_.get("ip_address") or "")
-     if "channels-dvr" in str(c_.get("user_agent", "")).lower() and ip_ not in ("", "unknown"):base = "http://%s:8089" % ip_;log("viewer buffer: found Channels DVR at %s (set CHANNELS_DVR to skip this lookup)" % base);break
-    if not base:
-     if mono() - t0 > 120:say("nocd", "waiting (no Channels DVR client on this stream yet; set CHANNELS_DVR if this persists)");time.sleep(30);continue
-     time.sleep(5);continue
    if mono() - tmap > 300:
     tmap = mono();num = dev = None;st = w.get(base + "/settings", timeout=5).json()
     for k, v in st.items():
